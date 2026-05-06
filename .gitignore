@@ -1,0 +1,8 @@
+doc
+node_modules
+dist
+
+*.bin
+*.lst
+*.ram
+*.scx

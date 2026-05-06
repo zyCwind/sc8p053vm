@@ -1,0 +1,10 @@
+[PROJECT]
+Version=200
+Compile=0
+Device=SC8P053
+OptValue=-local,-asmfile,+asm,-speed,+space,-debug
+RuntimeValue=
+WarningValue=-9
+config=FFFF,FFFF,FFFF,
+[FILE]
+SourceFile=main.asm
