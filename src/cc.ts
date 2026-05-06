@@ -24,6 +24,14 @@ interface DebugInfo {
     varMap: Map<string, Sym[]>;
 }
 
+function toAsmName(name: string): string {
+    return 'V_' + name.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+}
+
+function trimStart(s: string): string {
+    return s.replace(/^[\s]+/, '');
+}
+
 interface Sym {
     name: string;
     asmName: string;
@@ -55,8 +63,693 @@ interface Fn {
     frameBase: number;
 }
 
-function toAsmName(name: string): string {
-    return 'V_' + name.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+type TokenType =
+    | 'identifier'
+    | 'number'
+    | 'string'
+    | 'char'
+    | 'punctuation'
+    | 'whitespace'
+    | 'newline'
+    | 'other';
+
+interface Token {
+    type: TokenType;
+    value: string;
+    lineNo: number;
+    noExpand?: Set<string>;
+}
+
+interface ObjectMacro {
+    kind: 'object';
+    name: string;
+    body: Token[];
+}
+
+interface FunctionMacro {
+    kind: 'function';
+    name: string;
+    params: string[];
+    isVariadic: boolean;
+    body: Token[];
+}
+
+type Macro = ObjectMacro | FunctionMacro;
+
+interface CondFrame {
+    active: boolean;
+    elseSeen: boolean;
+    parentActive: boolean;
+}
+
+class Preprocessor {
+    private macros: Map<string, Macro> = new Map();
+    private condStack: CondFrame[] = [];
+
+    preprocess(source: string): string {
+        this.macros.clear();
+        this.condStack = [];
+        const stripped = this.stripComments(source);
+        const { text: merged, lineMap, rawLineCount } = this.joinContinuationLines(stripped);
+        const mergedLines = merged.split('\n');
+        const outputLines: string[] = new Array(rawLineCount).fill('');
+        for (let i = 0; i < mergedLines.length; i++) {
+            const line = mergedLines[i];
+            const trimmed = trimStart(line);
+            const targetLine = lineMap[i];
+            if (trimmed.startsWith('#')) {
+                const result = this.processDirective(trimmed, i + 1);
+                if (result !== null) {
+                    outputLines[targetLine] = result;
+                }
+            } else {
+                if (this.isActive()) {
+                    const expanded = this.expandLine(line, i + 1);
+                    outputLines[targetLine] = expanded;
+                }
+            }
+        }
+        if (this.condStack.length > 0) {
+            throw new Error(`Unterminated #if directive at end of file`);
+        }
+        return outputLines.join('\n');
+    }
+
+    private joinContinuationLines(source: string): { text: string; lineMap: number[]; rawLineCount: number } {
+        const rawLines = source.split('\n');
+        const result: string[] = [];
+        const lineMap: number[] = [];
+        for (let i = 0; i < rawLines.length; i++) {
+            let line = rawLines[i];
+            const startLine = i;
+            while (line.endsWith('\\') && i + 1 < rawLines.length) {
+                line = line.slice(0, -1) + rawLines[++i];
+            }
+            result.push(line);
+            lineMap.push(startLine);
+        }
+        return { text: result.join('\n'), lineMap, rawLineCount: rawLines.length };
+    }
+
+    private stripComments(source: string): string {
+        let result = '';
+        let i = 0;
+        const len = source.length;
+        while (i < len) {
+            if (source[i] === '"' || source[i] === "'") {
+                const quote = source[i];
+                result += source[i++];
+                while (i < len && source[i] !== quote) {
+                    if (source[i] === '\\' && i + 1 < len) {
+                        result += source[i++];
+                    }
+                    result += source[i++];
+                }
+                if (i < len) result += source[i++];
+            } else if (source[i] === '/' && i + 1 < len && source[i + 1] === '/') {
+                while (i < len && source[i] !== '\n') i++;
+            } else if (source[i] === '/' && i + 1 < len && source[i + 1] === '*') {
+                i += 2;
+                let foundEnd = false;
+                while (i < len) {
+                    if (source[i] === '*' && i + 1 < len && source[i + 1] === '/') {
+                        i += 2;
+                        foundEnd = true;
+                        break;
+                    }
+                    if (source[i] === '\n') {
+                        result += '\n';
+                    }
+                    i++;
+                }
+                if (!foundEnd) {
+                    result += ' ';
+                } else {
+                    result += ' ';
+                }
+            } else {
+                result += source[i++];
+            }
+        }
+        return result;
+    }
+
+    private isActive(): boolean {
+        if (this.condStack.length === 0) return true;
+        return this.condStack[this.condStack.length - 1].active;
+    }
+
+    private processDirective(line: string, lineNo: number): string | null {
+        const text = trimStart(line.substring(1));
+        if (text.startsWith('define')) {
+            if (this.isActive()) this.processDefine(trimStart(text.substring(6)), lineNo);
+            return null;
+        }
+        if (text.startsWith('undef')) {
+            if (this.isActive()) this.processUndef(trimStart(text.substring(5)));
+            return null;
+        }
+        if (text.startsWith('ifdef')) {
+            this.processIfdef(trimStart(text.substring(5)), false);
+            return null;
+        }
+        if (text.startsWith('ifndef')) {
+            this.processIfdef(trimStart(text.substring(6)), true);
+            return null;
+        }
+        if (text.startsWith('if')) {
+            this.processIf(trimStart(text.substring(2)), lineNo);
+            return null;
+        }
+        if (text.startsWith('elif')) {
+            this.processElif(trimStart(text.substring(4)), lineNo);
+            return null;
+        }
+        if (text.startsWith('else')) {
+            this.processElse();
+            return null;
+        }
+        if (text.startsWith('endif')) {
+            this.processEndif();
+            return null;
+        }
+        return null;
+    }
+
+    private processDefine(text: string, lineNo: number): void {
+        const tokens = this.tokenize(text, lineNo);
+        if (tokens.length === 0) return;
+        const first = tokens[0];
+        if (first.type !== 'identifier') return;
+        const name = first.value;
+
+        if (this.macros.has(name)) {
+            this.macros.delete(name);
+        }
+
+        const rest = tokens.slice(1);
+        const leadingWs = rest.findIndex(t => t.type !== 'whitespace');
+
+        if (leadingWs === -1) {
+            this.macros.set(name, { kind: 'object', name, body: [] });
+            return;
+        }
+
+        if (leadingWs === 0 && rest[0].type === 'punctuation' && rest[0].value === '(') {
+            this.parseFunctionMacro(name, rest, 0, lineNo);
+        } else {
+            const body = rest.slice(leadingWs);
+            this.macros.set(name, { kind: 'object', name, body });
+        }
+    }
+
+    private parseFunctionMacro(name: string, tokens: Token[], openParenIdx: number, lineNo: number): void {
+        const params: string[] = [];
+        let isVariadic = false;
+        let i = openParenIdx + 1;
+
+        while (i < tokens.length) {
+            if (tokens[i].type === 'punctuation' && tokens[i].value === ')') {
+                i++;
+                break;
+            }
+            if (tokens[i].type === 'punctuation' && tokens[i].value === '...') {
+                isVariadic = true;
+                i++;
+                if (i < tokens.length && tokens[i].type === 'punctuation' && tokens[i].value === ')') {
+                    i++;
+                    break;
+                }
+                continue;
+            }
+            if (tokens[i].type === 'identifier') {
+                params.push(tokens[i].value);
+                i++;
+                if (i < tokens.length && tokens[i].type === 'punctuation' && tokens[i].value === ',') {
+                    i++;
+                }
+                continue;
+            }
+            if (tokens[i].type === 'whitespace' || tokens[i].type === 'punctuation' && tokens[i].value === ',') {
+                i++;
+                continue;
+            }
+            i++;
+        }
+
+        const body = tokens.slice(i);
+        const trimmedBody = this.trimLeadingWhitespace(body);
+        this.macros.set(name, { kind: 'function', name, params, isVariadic, body: trimmedBody });
+    }
+
+    private processUndef(text: string): void {
+        const name = text.trim().split(/\s/)[0];
+        if (name) this.macros.delete(name);
+    }
+
+    private processIfdef(text: string, negate: boolean): void {
+        const name = text.trim().split(/\s/)[0];
+        const defined = this.macros.has(name);
+        const condition = negate ? !defined : defined;
+        this.condStack.push({
+            active: condition,
+            elseSeen: false,
+            parentActive: this.isActive()
+        });
+    }
+
+    private processIf(text: string, lineNo: number): void {
+        const result = this.evaluateCondition(text, lineNo);
+        this.condStack.push({
+            active: result,
+            elseSeen: false,
+            parentActive: this.condStack.length === 0 ? true : this.condStack[this.condStack.length - 1].active
+        });
+    }
+
+    private processElif(text: string, lineNo: number): void {
+        if (this.condStack.length === 0) {
+            throw new Error(`#elif without #if at line ${lineNo}`);
+        }
+        const frame = this.condStack[this.condStack.length - 1];
+        if (frame.elseSeen) {
+            throw new Error(`#elif after #else at line ${lineNo}`);
+        }
+        if (!frame.parentActive) return;
+        if (frame.active) {
+            frame.active = false;
+        } else {
+            const result = this.evaluateCondition(text, lineNo);
+            frame.active = result;
+        }
+    }
+
+    private processElse(): void {
+        if (this.condStack.length === 0) {
+            throw new Error(`#else without #if`);
+        }
+        const frame = this.condStack[this.condStack.length - 1];
+        if (frame.elseSeen) {
+            throw new Error(`duplicate #else`);
+        }
+        frame.elseSeen = true;
+        if (!frame.parentActive) return;
+        frame.active = !frame.active;
+    }
+
+    private processEndif(): void {
+        if (this.condStack.length === 0) {
+            throw new Error(`#endif without #if`);
+        }
+        this.condStack.pop();
+    }
+
+    private evaluateCondition(text: string, lineNo: number): boolean {
+        const expanded = this.expandLine(text, lineNo);
+        const resolved = this.resolveDefined(expanded);
+        return this.evalConstExpr(resolved);
+    }
+
+    private resolveDefined(text: string): string {
+        return text.replace(/\bdefined\s*\(\s*(\w+)\s*\)/g, (_, name) => {
+            return this.macros.has(name) ? '1' : '0';
+        }).replace(/\bdefined\s+(\w+)/g, (_, name) => {
+            return this.macros.has(name) ? '1' : '0';
+        });
+    }
+
+    private evalConstExpr(text: string): boolean {
+        const expr = text.trim();
+        if (expr === '') return false;
+        try {
+            const jsExpr = expr
+                .replace(/&&/g, '&&')
+                .replace(/\|\|/g, '||')
+                .replace(/!/g, '!')
+                .replace(/&/g, '&')
+                .replace(/\|/g, '|');
+            const result = new Function(`return (${jsExpr})`)();
+            return !!result;
+        } catch {
+            return expr !== '0' && expr.trim() !== '';
+        }
+    }
+
+    private expandLine(line: string, lineNo: number): string {
+        const tokens = this.tokenize(line, lineNo);
+        const expanded = this.expandTokens(tokens, new Set());
+        return expanded.map(t => t.value).join('');
+    }
+
+    private expandTokens(tokens: Token[], expanding: Set<string>): Token[] {
+        const result: Token[] = [];
+        let i = 0;
+        while (i < tokens.length) {
+            const token = tokens[i];
+            const noExpand = token.noExpand || new Set<string>();
+            if (token.type === 'identifier' && !noExpand.has(token.value) && !expanding.has(token.value)) {
+                const macro = this.macros.get(token.value);
+                if (macro) {
+                    const newExpanding = new Set(expanding);
+                    newExpanding.add(token.value);
+                    if (macro.kind === 'object') {
+                        const expanded = this.expandTokens(macro.body, newExpanding);
+                        const painted = expanded.map(t => {
+                            if (t.type === 'identifier' && t.value === token.value) {
+                                const t2 = { ...t };
+                                t2.noExpand = new Set(t.noExpand || []);
+                                t2.noExpand.add(token.value);
+                                return t2;
+                            }
+                            return t;
+                        });
+                        const remaining = tokens.slice(i + 1);
+                        const rescanned = this.expandTokens([...painted, ...remaining], expanding);
+                        result.push(...rescanned);
+                        return result;
+                    }
+                    if (macro.kind === 'function') {
+                        const { args, nextIdx } = this.collectArgs(tokens, i + 1, macro);
+                        if (args !== null) {
+                            const substituted = this.substituteFunctionMacro(macro, args, expanding, token.value);
+                            const reExpanded = this.expandTokens(substituted, newExpanding);
+                            const painted = reExpanded.map(t => {
+                                if (t.type === 'identifier' && t.value === token.value) {
+                                    const t2 = { ...t };
+                                    t2.noExpand = new Set(t.noExpand || []);
+                                    t2.noExpand.add(token.value);
+                                    return t2;
+                                }
+                                return t;
+                            });
+                            const remaining = tokens.slice(nextIdx);
+                            const rescanned = this.expandTokens([...painted, ...remaining], expanding);
+                            result.push(...rescanned);
+                            return result;
+                        }
+                    }
+                }
+            }
+            result.push(token);
+            i++;
+        }
+        return result;
+    }
+
+    private collectArgs(tokens: Token[], startIdx: number, macro: FunctionMacro): { args: Token[][] | null; nextIdx: number } {
+        let i = startIdx;
+        while (i < tokens.length && tokens[i].type === 'whitespace') i++;
+        if (i >= tokens.length || tokens[i].value !== '(') {
+            return { args: null, nextIdx: startIdx };
+        }
+        i++;
+
+        const args: Token[][] = [];
+        let current: Token[] = [];
+        let depth = 0;
+
+        while (i < tokens.length) {
+            const t = tokens[i];
+            if (t.value === '(') {
+                depth++;
+                current.push(t);
+            } else if (t.value === ')') {
+                if (depth === 0) {
+                    if (current.length > 0 || args.length > 0 || macro.params.length > 0) {
+                        args.push(this.trimTokenEdges(current));
+                    }
+                    return { args, nextIdx: i + 1 };
+                }
+                depth--;
+                current.push(t);
+            } else if (t.value === ',' && depth === 0) {
+                args.push(this.trimTokenEdges(current));
+                current = [];
+            } else {
+                current.push(t);
+            }
+            i++;
+        }
+
+        return { args: null, nextIdx: startIdx };
+    }
+
+    private substituteFunctionMacro(macro: FunctionMacro, args: Token[][], expanding: Set<string>, macroName: string): Token[] {
+        const expandedArgs = args.map(arg => this.expandTokens(arg, new Set()));
+        const result: Token[] = [];
+        const body = this.trimPasteWhitespace(macro.body);
+        for (let i = 0; i < body.length; i++) {
+            const token = body[i];
+
+            const isNextPaste = (i + 1 < body.length && body[i + 1].type === 'punctuation' && body[i + 1].value === '##')
+                || (i + 2 < body.length && body[i + 1].type === 'whitespace' && body[i + 2].type === 'punctuation' && body[i + 2].value === '##');
+            const isPrevPaste = result.length > 0 && result[result.length - 1].type === 'punctuation' && result[result.length - 1].value === '##';
+
+            if (token.type === 'punctuation' && token.value === '##') {
+                let j = i + 1;
+                while (j < body.length && body[j].type === 'whitespace') j++;
+                if (j < body.length && body[j].type === 'identifier') {
+                    const paramIdx = macro.params.indexOf(body[j].value);
+                    if (paramIdx >= 0 && paramIdx < args.length) {
+                        const left = result.length > 0 ? result.pop()! : { type: 'other' as TokenType, value: '', lineNo: 0 };
+                        const rightTokens = args[paramIdx];
+                        const rightValue = rightTokens.map(t => t.value).join('');
+                        const pasted = left.value + rightValue;
+                        result.push({ type: this.classifyPasted(pasted), value: pasted, lineNo: left.lineNo });
+                        i = j;
+                        continue;
+                    }
+                }
+                const left = result.length > 0 ? result.pop()! : { type: 'other' as TokenType, value: '', lineNo: 0 };
+                let j2 = i + 1;
+                while (j2 < body.length && body[j2].type === 'whitespace') j2++;
+                if (j2 < body.length) {
+                    const pasted = left.value + body[j2].value;
+                    result.push({ type: this.classifyPasted(pasted), value: pasted, lineNo: left.lineNo });
+                    i = j2;
+                    continue;
+                }
+                result.push(left);
+                continue;
+            }
+
+            if (token.type === 'punctuation' && token.value === '#' && i + 1 < body.length) {
+                const next = body[i + 1];
+                if (next.type === 'punctuation' && next.value === '#') {
+                    i = this.handleTokenPasting(body, i + 2, result);
+                    continue;
+                }
+                if (next.type === 'identifier') {
+                    const paramIdx = macro.params.indexOf(next.value);
+                    if (paramIdx >= 0 && paramIdx < args.length) {
+                        result.push(this.stringify(args[paramIdx]));
+                        i++;
+                        continue;
+                    }
+                }
+            }
+
+            if (token.type === 'identifier') {
+                const paramIdx = macro.params.indexOf(token.value);
+                if (paramIdx >= 0 && paramIdx < args.length) {
+                    if (isPrevPaste || isNextPaste) {
+                        result.push(...args[paramIdx]);
+                    } else {
+                        result.push(...expandedArgs[paramIdx]);
+                    }
+                    continue;
+                }
+            }
+
+            result.push(token);
+        }
+        return this.handleAllTokenPasting(result);
+    }
+
+    private handleTokenPasting(body: Token[], startIdx: number, result: Token[]): number {
+        const left = result.length > 0 ? result.pop()! : { type: 'other' as TokenType, value: '', lineNo: 0 };
+        let right: Token;
+        let i = startIdx;
+        while (i < body.length && body[i].type === 'whitespace') i++;
+        if (i < body.length) {
+            right = body[i];
+            i++;
+        } else {
+            result.push(left);
+            return i;
+        }
+        const pasted = left.value + right.value;
+        result.push({ type: this.classifyPasted(pasted), value: pasted, lineNo: left.lineNo });
+        return i;
+    }
+
+    private handleAllTokenPasting(tokens: Token[]): Token[] {
+        const result: Token[] = [];
+        for (let i = 0; i < tokens.length; i++) {
+            if (tokens[i].type === 'punctuation' && tokens[i].value === '##') {
+                const left = result.length > 0 ? result.pop()! : { type: 'other' as TokenType, value: '', lineNo: 0 };
+                let j = i + 1;
+                while (j < tokens.length && tokens[j].type === 'whitespace') j++;
+                if (j < tokens.length) {
+                    const right = tokens[j];
+                    const pasted = left.value + right.value;
+                    result.push({ type: this.classifyPasted(pasted), value: pasted, lineNo: left.lineNo });
+                    i = j;
+                } else {
+                    result.push(left);
+                }
+            } else {
+                result.push(tokens[i]);
+            }
+        }
+        return result;
+    }
+
+    private stringify(tokens: Token[]): Token {
+        const s = tokens.map(t => t.value).join('').trim();
+        const escaped = s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        return { type: 'string', value: `"${escaped}"`, lineNo: tokens.length > 0 ? tokens[0].lineNo : 0 };
+    }
+
+    private trimPasteWhitespace(tokens: Token[]): Token[] {
+        const result: Token[] = [];
+        for (let i = 0; i < tokens.length; i++) {
+            if (tokens[i].type === 'punctuation' && tokens[i].value === '##') {
+                while (result.length > 0 && result[result.length - 1].type === 'whitespace') {
+                    result.pop();
+                }
+                result.push(tokens[i]);
+                let j = i + 1;
+                while (j < tokens.length && tokens[j].type === 'whitespace') j++;
+                i = j - 1;
+            } else {
+                result.push(tokens[i]);
+            }
+        }
+        return result;
+    }
+
+    private classifyPasted(value: string): TokenType {
+        if (/^[a-zA-Z_]\w*$/.test(value)) return 'identifier';
+        if (/^[0-9]/.test(value)) return 'number';
+        return 'other';
+    }
+
+    private trimLeadingWhitespace(tokens: Token[]): Token[] {
+        let i = 0;
+        while (i < tokens.length && tokens[i].type === 'whitespace') i++;
+        return tokens.slice(i);
+    }
+
+    private trimTokenEdges(tokens: Token[]): Token[] {
+        let start = 0;
+        while (start < tokens.length && tokens[start].type === 'whitespace') start++;
+        let end = tokens.length;
+        while (end > start && tokens[end - 1].type === 'whitespace') end--;
+        return tokens.slice(start, end);
+    }
+
+    private tokenize(text: string, lineNo: number): Token[] {
+        const tokens: Token[] = [];
+        let i = 0;
+        while (i < text.length) {
+            const ch = text[i];
+
+            if (ch === ' ' || ch === '\t') {
+                let j = i;
+                while (j < text.length && (text[j] === ' ' || text[j] === '\t')) j++;
+                tokens.push({ type: 'whitespace', value: text.slice(i, j), lineNo });
+                i = j;
+                continue;
+            }
+
+            if (ch === '/' && i + 1 < text.length && text[i + 1] === '/') {
+                tokens.push({ type: 'other', value: text.slice(i), lineNo });
+                break;
+            }
+
+            if (ch === '"') {
+                const { value, endIdx } = this.scanString(text, i, lineNo);
+                tokens.push({ type: 'string', value, lineNo });
+                i = endIdx;
+                continue;
+            }
+
+            if (ch === "'") {
+                const { value, endIdx } = this.scanChar(text, i, lineNo);
+                tokens.push({ type: 'char', value, lineNo });
+                i = endIdx;
+                continue;
+            }
+
+            if (/[a-zA-Z_]/.test(ch)) {
+                let j = i;
+                while (j < text.length && /[a-zA-Z0-9_]/.test(text[j])) j++;
+                tokens.push({ type: 'identifier', value: text.slice(i, j), lineNo });
+                i = j;
+                continue;
+            }
+
+            if (/[0-9]/.test(ch)) {
+                let j = i;
+                while (j < text.length && /[a-zA-Z0-9_.xXa-fA-F]/.test(text[j])) j++;
+                tokens.push({ type: 'number', value: text.slice(i, j), lineNo });
+                i = j;
+                continue;
+            }
+
+            if (ch === '.' && i + 2 < text.length && text[i + 1] === '.' && text[i + 2] === '.') {
+                tokens.push({ type: 'punctuation', value: '...', lineNo });
+                i += 3;
+                continue;
+            }
+
+            if (ch === '#' && i + 1 < text.length && text[i + 1] === '#') {
+                tokens.push({ type: 'punctuation', value: '##', lineNo });
+                i += 2;
+                continue;
+            }
+
+            if ('+-*/%<>=!&|^~?:;,()[]{}.#'.includes(ch)) {
+                let j = i + 1;
+                if (j < text.length) {
+                    const two = text.slice(i, j + 1);
+                    if (['++', '--', '+=', '-=', '*=', '/=', '%=', '<<', '>>', '<=', '>=', '==', '!=', '&&', '||', '&=', '|=', '^=', '<<=', '>>=', '->'].includes(two)) {
+                        tokens.push({ type: 'punctuation', value: two, lineNo });
+                        i = j + 1;
+                        continue;
+                    }
+                }
+                tokens.push({ type: 'punctuation', value: ch, lineNo });
+                i++;
+                continue;
+            }
+
+            tokens.push({ type: 'other', value: ch, lineNo });
+            i++;
+        }
+        return tokens;
+    }
+
+    private scanString(text: string, start: number, lineNo: number): { value: string; endIdx: number } {
+        let i = start + 1;
+        while (i < text.length) {
+            if (text[i] === '\\') { i += 2; continue; }
+            if (text[i] === '"') { i++; break; }
+            i++;
+        }
+        return { value: text.slice(start, i), endIdx: i };
+    }
+
+    private scanChar(text: string, start: number, lineNo: number): { value: string; endIdx: number } {
+        let i = start + 1;
+        while (i < text.length) {
+            if (text[i] === '\\') { i += 2; continue; }
+            if (text[i] === "'") { i++; break; }
+            i++;
+        }
+        return { value: text.slice(start, i), endIdx: i };
+    }
 }
 
 class SC8P053Compiler {
@@ -86,9 +779,11 @@ class SC8P053Compiler {
     }
 
     compile(source: string): { rom: Uint16Array; asm: string; debugInfo: DebugInfo } {
+        const preprocessor = new Preprocessor();
+        const preprocessed = preprocessor.preprocess(source);
         const parser = new Parser();
         parser.setLanguage(C as any);
-        const tree = parser.parse(source);
+        const tree = parser.parse(preprocessed);
 
         this.asmLines = [];
         this.globalSymbols.clear();
@@ -877,10 +1572,6 @@ class SC8P053Compiler {
             const child = node.child(i);
             if (!child) continue;
             if (child.type === '{' || child.type === '}') continue;
-            if (child.type === 'declaration') {
-                this.emitDeclarationInit(child, funcInfo);
-                continue;
-            }
             this.emitStatement(child, funcInfo);
         }
     }
