@@ -3,7 +3,14 @@
  * Copyright (c) 2026 391321232@qq.com
  * Licensed under BSL-1.1 (see LICENSE). Changes to MIT after 2099-12-31.
  */
-import { assemble, DebugInfo, VM } from 'sc8p053vm';
+import hljs from 'highlight.js/lib/core';
+import c from 'highlight.js/lib/languages/c';
+import { compile, DebugInfo, VM } from 'sc8p053vm';
+
+import 'highlight.js/styles/github-dark.css';
+
+// 注册 C 语言支持
+hljs.registerLanguage('c', c);
 
 class IDE {
     private rom: Uint16Array | null = null;
@@ -25,7 +32,7 @@ class IDE {
         if (input) {
             (async () => {
                 try {
-                    const response = await fetch('public/main.asm');
+                    const response = await fetch('public/main.c');
                     const text = await response.text();
                     input.value = text;
                 } finally {
@@ -41,7 +48,7 @@ class IDE {
             const input = document.getElementById('code-input') as HTMLTextAreaElement;
             const text = input.value;
 
-            const result = assemble(text);
+            const result = compile(text);
             this.rom = result.rom;
             this.debugInfo = result.debugInfo;
             this.updateCodeInput();
@@ -102,7 +109,7 @@ class IDE {
                 // 代码内容
                 const codeElement = document.createElement('div');
                 codeElement.className = 'code-content';
-                codeElement.innerHTML = this.highlightComment(lineText || ' ');
+                codeElement.innerHTML = `<span>${this.highlightCode(lineText || ' ')}</span>`;
 
                 lineElement.appendChild(codeElement);
 
@@ -151,7 +158,10 @@ class IDE {
 
         let targetLineNumber = lineNumber;
         if (targetLineNumber === undefined && this.debugInfo) {
-            targetLineNumber = this.debugInfo.lineNoMap.get(0);
+            const fn = this.debugInfo.fnMap.get('main');
+            if (fn) {
+                targetLineNumber = this.debugInfo.lineNoMap.get(fn);
+            }
         }
 
         // 添加新的高亮并滚动
@@ -170,6 +180,16 @@ class IDE {
         }
 
         this.currentLine = targetLineNumber ?? null;
+    }
+
+    private highlightCode(text: string): string {
+        try {
+            const result = hljs.highlight(text, { language: 'c' });
+            return result.value;
+        } catch (error) {
+            // 如果高亮失败，返回原始文本
+            return text;
+        }
     }
 
     private highlightComment(text: string): string {
@@ -284,11 +304,7 @@ class IDE {
 
     private run(): void {
         if (this.vm) {
-            this.isRunning = true;
-            this.isStepping = false;
-            this.executeCycle();
-
-            return;
+            //
         } else {
             this.assembleCode();
         }
@@ -310,7 +326,7 @@ class IDE {
             this.assembleCode();
         }
         if (this.vm) {
-            this.isRunning = false;
+            this.isRunning = true;
             this.isStepping = true;
             if (shouldUpdateStopButton) {
                 this.updateStopButton();

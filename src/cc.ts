@@ -4,9 +4,15 @@
  * Licensed under BSL-1.1 (see LICENSE). Changes to MIT after 2099-12-31.
  */
 
-import Parser from 'tree-sitter';
-import C from 'tree-sitter-c';
+import Parser from 'web-tree-sitter';
 import { assemble } from './asmc';
+
+let c: Parser.Language | null = null;
+
+Parser.init().then(() => {
+    Parser.Language.load('tree-sitter-c.wasm').then(language => c = language);
+});
+
 
 const RAM_GP_START = 0x20;
 const RAM_GP_END = 0x6F;
@@ -18,7 +24,7 @@ const ISR_SAVE_SIZE = 4;
 
 type Type = 'void' | 'u8' | 'i8' | 'bool';
 
-interface DebugInfo {
+export interface DebugInfo {
     lineNoMap: Map<number, number>;
     fnMap: Map<string, number>;
     varMap: Map<string, Sym[]>;
@@ -782,7 +788,7 @@ class SC8P053Compiler {
         const preprocessor = new Preprocessor();
         const preprocessed = preprocessor.preprocess(source);
         const parser = new Parser();
-        parser.setLanguage(C as any);
+        parser.setLanguage(c);
         const tree = parser.parse(preprocessed);
 
         this.asmLines = [];
@@ -1139,12 +1145,10 @@ class SC8P053Compiler {
     }
 
     private getBankForAddr(addr: number): number {
-        if (addr >= 0xA0 && addr <= 0xEF) return 1;
-        if (addr >= 0x70 && addr <= 0x7F) return -1;
+        if (addr >= 0x80 && addr <= 0xEF) return 1;  // Bank1 SFR
+        if (addr >= 0x70 && addr <= 0xFF) return -1; // 0x70-0x7F通用RAM + 0xF0-0xFF快速存储区
         return 0;
     }
-
-    private static readonly BANK_UNKNOWN = -2;
 
     private emitBankSwitch(bank: number) {
         if (bank === this.currentAsmBank) return;
@@ -1154,7 +1158,7 @@ class SC8P053Compiler {
     }
 
     private invalidateBankState() {
-        this.currentAsmBank = SC8P053Compiler.BANK_UNKNOWN;
+        this.currentAsmBank = -2;
     }
 
     private emitLabel(label: string) {
@@ -1223,6 +1227,19 @@ class SC8P053Compiler {
     private emitTestBitTemp(instr: 'SZB' | 'SNZB', idx: number, bit: number) {
         this.ensureBank(this.getTempAddr(idx));
         this.asmLines.push(`${instr} ${this.tempName(idx)},${bit}`);
+    }
+
+    private emitIndirectRead() {
+        this.asmLines.push('CLRB STATUS,5');
+        this.currentAsmBank = 0;
+        this.asmLines.push('LD FSR,A');
+        this.asmLines.push('LD A,INDF');
+    }
+
+    private emitIndirectSetFSR() {
+        this.asmLines.push('CLRB STATUS,5');
+        this.currentAsmBank = 0;
+        this.asmLines.push('LD FSR,A');
     }
 
     private collectDeclarations(node: Parser.SyntaxNode) {
@@ -1391,7 +1408,7 @@ class SC8P053Compiler {
             const pType = child.childForFieldName('type');
             const pDeclarator = child.childForFieldName('declarator');
             if (!pType || !pDeclarator) continue;
-            const pName = pDeclarator.text.trim();
+            const { name: pName } = this.parseDeclarator(pDeclarator);
             params.push({ name: pName, asmName: toAsmName(funcName + '_' + pName), type: this.resolveType(pType) });
         }
         return params;
@@ -1415,6 +1432,18 @@ class SC8P053Compiler {
             const inner = node.childForFieldName('declarator');
             if (inner) return this.parseDeclarator(inner);
             return { name: '', isArray: false, arraySize: 0 };
+        }
+        if (node.type === 'pointer_declarator') {
+            for (let i = 0; i < node.childCount; i++) {
+                const child = node.child(i);
+                if (child && child.type === 'identifier') {
+                    return { name: child.text.trim(), isArray: false, arraySize: 0 };
+                }
+                if (child && child.type === 'array_declarator') {
+                    return this.parseDeclarator(child);
+                }
+            }
+            return { name: node.text.trim(), isArray: false, arraySize: 0 };
         }
         const arrayDecl = this.findNodeByType(node, 'array_declarator');
         if (arrayDecl) {
@@ -1467,7 +1496,7 @@ class SC8P053Compiler {
         this.asmLines.push('JP V_MAIN');
         if (hasISR) {
             this.asmLines.push('ORG 0x04');
-            this.asmLines.push('JP V_ISR');
+            this.asmLines.push('JP V_INTERRUPT');
         }
         // this.asmLines.push('');
 
@@ -1808,6 +1837,19 @@ class SC8P053Compiler {
                 if (declNode.type === 'array_declarator') {
                     const idNode = declNode.childForFieldName('declarator');
                     if (idNode) sym = this.resolveSymbol(idNode, funcInfo);
+                } else if (declNode.type === 'pointer_declarator') {
+                    for (let i = 0; i < declNode.childCount; i++) {
+                        const child = declNode.child(i);
+                        if (child && child.type === 'identifier') {
+                            sym = this.resolveSymbol(child, funcInfo);
+                            break;
+                        }
+                        if (child && child.type === 'array_declarator') {
+                            const idNode = child.childForFieldName('declarator');
+                            if (idNode) sym = this.resolveSymbol(idNode, funcInfo);
+                            break;
+                        }
+                    }
                 } else {
                     sym = this.resolveSymbol(declNode, funcInfo);
                 }
@@ -2154,6 +2196,42 @@ class SC8P053Compiler {
         if (op === '=') {
             if (innerLeft.type === 'subscript_expression') {
                 this.emitArrayStore(innerLeft, right, funcInfo);
+            } else if (innerLeft.type === 'pointer_expression') {
+                const addr = this.extractAddr(innerLeft);
+                if (addr !== null) {
+                    this.emitLoadAccumulator(right, funcInfo);
+                    const equAddr = addr & 0x7F;
+                    this.ensureBank(addr);
+                    this.asmLines.push(`LD 0x${equAddr.toString(16).toUpperCase().padStart(2, '0')},A`);
+                } else {
+                    const opNode = innerLeft.child(0);
+                    const argNode = innerLeft.child(1);
+                    if (opNode && opNode.text === '*' && argNode) {
+                        this.emitLoadAccumulator(right, funcInfo);
+                        const t = this.allocTemp();
+                        this.emitLdAToTemp(t);
+                        this.emitLoadAccumulator(argNode, funcInfo);
+                        this.emitIndirectSetFSR();
+                        this.emitLdTempToA(t);
+                        this.asmLines.push('LD INDF,A');
+                    }
+                }
+            } else if (innerLeft.type === 'unary_expression') {
+                const opNode = this.getChildByField(innerLeft, 'operator');
+                const argNode = innerLeft.childForFieldName('argument');
+                if (opNode && opNode.text === '*' && argNode) {
+                    this.emitLoadAccumulator(right, funcInfo);
+                    const t = this.allocTemp();
+                    this.emitLdAToTemp(t);
+                    this.emitLoadAccumulator(argNode, funcInfo);
+                    this.emitIndirectSetFSR();
+                    this.emitLdTempToA(t);
+                    this.asmLines.push('LD INDF,A');
+                } else {
+                    this.emitLoadAccumulator(right, funcInfo);
+                    const sym = this.resolveSymbol(left, funcInfo);
+                    if (sym) this.emitLdAToSym(sym);
+                }
             } else {
                 this.emitLoadAccumulator(right, funcInfo);
                 const sym = this.resolveSymbol(left, funcInfo);
@@ -2165,6 +2243,20 @@ class SC8P053Compiler {
         if (innerLeft.type === 'subscript_expression') {
             this.emitArrayCompoundAssign(innerLeft, right, funcInfo, op);
             return;
+        }
+
+        if (innerLeft.type === 'pointer_expression') {
+            this.emitPointerCompoundAssign(innerLeft, right, funcInfo, op);
+            return;
+        }
+
+        if (innerLeft.type === 'unary_expression') {
+            const uOp = this.getChildByField(innerLeft, 'operator');
+            const uArg = innerLeft.childForFieldName('argument');
+            if (uOp && uOp.text === '*' && uArg) {
+                this.emitPointerCompoundAssignUnary(uArg, right, funcInfo, op);
+                return;
+            }
         }
 
         const sym = this.resolveSymbol(left, funcInfo);
@@ -2242,9 +2334,148 @@ class SC8P053Compiler {
         this.emitLdAToTemp(t2);
         this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
         this.emitOpTemp('ADDA', t2);
+        this.asmLines.push('CLRB STATUS,5');
+        this.currentAsmBank = 0;
         this.asmLines.push('LD FSR,A');
         this.emitLdTempToA(t);
         this.asmLines.push('LD INDF,A');
+    }
+
+    private emitPointerCompoundAssign(left: Parser.SyntaxNode, right: Parser.SyntaxNode, funcInfo: Fn, op: string) {
+        const opNode = left.child(0);
+        const argNode = left.child(1);
+        if (!opNode || !argNode || opNode.text !== '*') return;
+
+        if (['+=', '-=', '&=', '|=', '^='].includes(op)) {
+            this.emitLoadAccumulator(left, funcInfo);
+            const constVal = this.getConstantValue(right);
+            switch (op) {
+                case '+=':
+                    if (constVal !== null) this.asmLines.push(`ADDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
+                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ADDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ADDA', t); } }
+                    break;
+                case '-=':
+                    if (constVal !== null) this.asmLines.push(`HSUBIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
+                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('HSUBA', rsym); else { this.emitLoadAccumulator(right, funcInfo); const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(left, funcInfo); this.emitOpTemp('HSUBA', t); } }
+                    break;
+                case '&=':
+                    if (constVal !== null) this.asmLines.push(`ANDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
+                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ANDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ANDA', t); } }
+                    break;
+                case '|=':
+                    if (constVal !== null) this.asmLines.push(`ORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
+                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ORA', t); } }
+                    break;
+                case '^=':
+                    if (constVal !== null) this.asmLines.push(`XORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
+                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('XORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('XORA', t); } }
+                    break;
+            }
+            const t = this.allocTemp();
+            this.emitLdAToTemp(t);
+            this.emitLoadAccumulator(argNode, funcInfo);
+            this.emitIndirectSetFSR();
+            this.emitLdTempToA(t);
+            this.asmLines.push('LD INDF,A');
+        } else if (op === '<<=' || op === '>>=') {
+            const t0 = this.allocTemp();
+            this.emitLoadAccumulator(left, funcInfo);
+            this.emitLdAToTemp(t0);
+            const shiftRight = op === '>>=';
+            const shiftConst = this.getConstantValue(right);
+            if (shiftConst !== null && shiftConst > 0) {
+                for (let i = 0; i < shiftConst; i++) {
+                    if (shiftRight) {
+                        this.asmLines.push('CLRB STATUS,0');
+                        this.emitOpTemp('RRCA', t0);
+                    } else {
+                        this.emitLdTempToA(t0);
+                        this.emitOpTemp('ADDA', t0);
+                    }
+                    this.emitLdAToTemp(t0);
+                }
+            } else if (shiftConst === null) {
+                const t1 = this.allocTemp();
+                this.emitLoadAccumulator(right, funcInfo);
+                this.emitLdAToTemp(t1);
+                const loopLabel = this.newLabel(funcInfo);
+                const doneLabel = this.newLabel(funcInfo);
+                this.emitLdTempToA(t1);
+                this.asmLines.push('HSUBIA 0x00');
+                this.asmLines.push('SZB STATUS,2');
+                this.asmLines.push(`JP ${doneLabel}`);
+                this.emitLabel(loopLabel);
+                if (shiftRight) {
+                    this.asmLines.push('CLRB STATUS,0');
+                    this.emitOpTemp('RRCA', t0);
+                } else {
+                    this.emitLdTempToA(t0);
+                    this.emitOpTemp('ADDA', t0);
+                }
+                this.emitLdAToTemp(t0);
+                this.emitLdTempToA(t1);
+                this.asmLines.push('HSUBIA 0x01');
+                this.emitLdAToTemp(t1);
+                this.emitLdTempToA(t1);
+                this.asmLines.push('HSUBIA 0x00');
+                this.asmLines.push('SNZB STATUS,2');
+                this.asmLines.push(`JP ${loopLabel}`);
+                this.emitLabel(doneLabel);
+            }
+            this.emitLoadAccumulator(argNode, funcInfo);
+            this.emitIndirectSetFSR();
+            this.emitLdTempToA(t0);
+            this.asmLines.push('LD INDF,A');
+        } else if (op === '*=' || op === '/=' || op === '%=') {
+            this.emitLoadAccumulator(left, funcInfo);
+            const t0 = this.allocTemp();
+            this.emitLdAToTemp(t0);
+            if (op === '*=') {
+                this.emitMultiply(left, right, funcInfo);
+            } else if (op === '/=') {
+                this.emitDivide(left, right, funcInfo);
+            } else {
+                this.emitModulo(left, right, funcInfo);
+            }
+            const tResult = this.allocTemp();
+            this.emitLdAToTemp(tResult);
+            this.emitLoadAccumulator(argNode, funcInfo);
+            this.emitIndirectSetFSR();
+            this.emitLdTempToA(tResult);
+            this.asmLines.push('LD INDF,A');
+        }
+    }
+
+    private emitPointerCompoundAssignUnary(argNode: Parser.SyntaxNode, right: Parser.SyntaxNode, funcInfo: Fn, op: string) {
+        if (['+=', '-=', '&=', '|=', '^='].includes(op)) {
+            this.emitLoadAccumulator(argNode, funcInfo);
+            this.emitIndirectSetFSR();
+            this.asmLines.push('LD A,INDF');
+            const constVal = this.getConstantValue(right);
+            switch (op) {
+                case '+=':
+                    if (constVal !== null) this.asmLines.push(`ADDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
+                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ADDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ADDA', t); } }
+                    break;
+                case '-=':
+                    if (constVal !== null) this.asmLines.push(`HSUBIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
+                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('HSUBA', rsym); else { this.emitLoadAccumulator(right, funcInfo); const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(argNode, funcInfo); this.emitIndirectSetFSR(); this.asmLines.push('LD A,INDF'); this.emitOpTemp('HSUBA', t); } }
+                    break;
+                case '&=':
+                    if (constVal !== null) this.asmLines.push(`ANDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
+                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ANDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ANDA', t); } }
+                    break;
+                case '|=':
+                    if (constVal !== null) this.asmLines.push(`ORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
+                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ORA', t); } }
+                    break;
+                case '^=':
+                    if (constVal !== null) this.asmLines.push(`XORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
+                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('XORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('XORA', t); } }
+                    break;
+            }
+            this.asmLines.push('LD INDF,A');
+        }
     }
 
     private emitArrayCompoundAssign(left: Parser.SyntaxNode, right: Parser.SyntaxNode, funcInfo: Fn, op: string) {
@@ -2303,6 +2534,8 @@ class SC8P053Compiler {
                 this.emitLdAToTemp(t2);
                 this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
                 this.emitOpTemp('ADDA', t2);
+                this.asmLines.push('CLRB STATUS,5');
+                this.currentAsmBank = 0;
                 this.asmLines.push('LD FSR,A');
                 this.emitLdTempToA(t);
                 this.asmLines.push('LD INDF,A');
@@ -2436,6 +2669,8 @@ class SC8P053Compiler {
                 this.emitLdAToTemp(t4);
                 this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
                 this.emitOpTemp('ADDA', t4);
+                this.asmLines.push('CLRB STATUS,5');
+                this.currentAsmBank = 0;
                 this.asmLines.push('LD FSR,A');
                 this.emitLdTempToA(t3);
                 this.asmLines.push('LD INDF,A');
@@ -2530,6 +2765,8 @@ class SC8P053Compiler {
                     this.emitLdAToTemp(t4);
                     this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
                     this.emitOpTemp('ADDA', t4);
+                    this.asmLines.push('CLRB STATUS,5');
+                    this.currentAsmBank = 0;
                     this.asmLines.push('LD FSR,A');
                     this.emitLdTempToA(t3);
                     this.asmLines.push('LD INDF,A');
@@ -2546,6 +2783,8 @@ class SC8P053Compiler {
                     this.emitLdAToTemp(t4);
                     this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
                     this.emitOpTemp('ADDA', t4);
+                    this.asmLines.push('CLRB STATUS,5');
+                    this.currentAsmBank = 0;
                     this.asmLines.push('LD FSR,A');
                     this.emitLdTempToA(t3);
                     this.asmLines.push('LD INDF,A');
@@ -2595,10 +2834,84 @@ class SC8P053Compiler {
 
     private emitUpdateExpression(node: Parser.SyntaxNode, funcInfo: Fn) {
         const operator = this.getChildByField(node, 'operator');
-        const argument = node.childForFieldName('argument');
+        let argument = node.childForFieldName('argument');
         if (!operator || !argument) return;
 
-        const isPrefix = node.child(0)!.type !== 'identifier';
+        const isPrefix = operator.startPosition.column < argument.startPosition.column;
+
+        const unwrappedArg = this.unwrapParentheses(argument);
+
+        if (unwrappedArg.type === 'pointer_expression') {
+            const opNode = unwrappedArg.child(0);
+            const argNode = unwrappedArg.child(1);
+            if (opNode && opNode.text === '*' && argNode) {
+                const ptrSym = this.resolveSymbol(argNode, funcInfo);
+                if (!ptrSym) return;
+
+                const isParenWrapped = argument.type === 'parenthesized_expression';
+                const isDerefValue = isParenWrapped || isPrefix;
+
+                if (isDerefValue) {
+                    if (operator.text === '++') {
+                        if (isPrefix) {
+                            this.emitLdSymToA(ptrSym);
+                            this.emitIndirectSetFSR();
+                            this.asmLines.push('LD A,INDF');
+                            this.asmLines.push('ADDIA 0x01');
+                            this.asmLines.push('LD INDF,A');
+                        } else {
+                            this.emitLdSymToA(ptrSym);
+                            this.emitIndirectSetFSR();
+                            this.asmLines.push('LD A,INDF');
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.asmLines.push('ADDIA 0x01');
+                            this.asmLines.push('LD INDF,A');
+                            this.emitLdTempToA(t);
+                        }
+                    } else if (operator.text === '--') {
+                        if (isPrefix) {
+                            this.emitLdSymToA(ptrSym);
+                            this.emitIndirectSetFSR();
+                            this.asmLines.push('LD A,INDF');
+                            this.asmLines.push('HSUBIA 0x01');
+                            this.asmLines.push('LD INDF,A');
+                        } else {
+                            this.emitLdSymToA(ptrSym);
+                            this.emitIndirectSetFSR();
+                            this.asmLines.push('LD A,INDF');
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.asmLines.push('HSUBIA 0x01');
+                            this.asmLines.push('LD INDF,A');
+                            this.emitLdTempToA(t);
+                        }
+                    }
+                    return;
+                }
+
+                if (operator.text === '++') {
+                    this.emitLdSymToA(ptrSym);
+                    this.emitIndirectRead();
+                    const t = this.allocTemp();
+                    this.emitLdAToTemp(t);
+                    this.emitLdSymToA(ptrSym);
+                    this.asmLines.push('ADDIA 0x01');
+                    this.emitLdAToSym(ptrSym);
+                    this.emitLdTempToA(t);
+                } else if (operator.text === '--') {
+                    this.emitLdSymToA(ptrSym);
+                    this.emitIndirectRead();
+                    const t = this.allocTemp();
+                    this.emitLdAToTemp(t);
+                    this.emitLdSymToA(ptrSym);
+                    this.asmLines.push('HSUBIA 0x01');
+                    this.emitLdAToSym(ptrSym);
+                    this.emitLdTempToA(t);
+                }
+                return;
+            }
+        }
 
         if (argument.type === 'subscript_expression') {
             const arraySym = this.resolveArraySymbol(argument, funcInfo);
@@ -2642,6 +2955,8 @@ class SC8P053Compiler {
                     this.emitLdAToTemp(t3);
                     this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
                     this.emitOpTemp('ADDA', t3);
+                    this.asmLines.push('CLRB STATUS,5');
+                    this.currentAsmBank = 0;
                     this.asmLines.push('LD FSR,A');
                     this.emitLdTempToA(t2);
                     this.asmLines.push('LD INDF,A');
@@ -2675,6 +2990,8 @@ class SC8P053Compiler {
                     this.emitLdAToTemp(t3);
                     this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
                     this.emitOpTemp('ADDA', t3);
+                    this.asmLines.push('CLRB STATUS,5');
+                    this.currentAsmBank = 0;
                     this.asmLines.push('LD FSR,A');
                     this.emitLdTempToA(t2);
                     this.asmLines.push('LD INDF,A');
@@ -2691,27 +3008,33 @@ class SC8P053Compiler {
 
         if (operator.text === '++') {
             if (isPrefix) {
+                // 前递增：先递增，再返回新值
                 this.emitLdSymToA(sym);
                 this.asmLines.push('ADDIA 0x01');
                 this.emitLdAToSym(sym);
             } else {
+                // 后递增：先返回原值，再递增
                 this.emitLdSymToA(sym);
-                this.emitLdAToSym(sym);
+                const t = this.allocTemp();
+                this.emitLdAToTemp(t);        // 保存原值
                 this.asmLines.push('ADDIA 0x01');
-                this.emitLdAToSym(sym);
-                this.asmLines.push('HSUBIA 0x01');
+                this.emitLdAToSym(sym);       // 存回递增后的值
+                this.emitLdTempToA(t);        // 返回原值
             }
         } else if (operator.text === '--') {
             if (isPrefix) {
+                // 前递减：先递减，再返回新值
                 this.emitLdSymToA(sym);
                 this.asmLines.push('HSUBIA 0x01');
                 this.emitLdAToSym(sym);
             } else {
+                // 后递减：先返回原值，再递减
                 this.emitLdSymToA(sym);
-                this.emitLdAToSym(sym);
+                const t = this.allocTemp();
+                this.emitLdAToTemp(t);        // 保存原值
                 this.asmLines.push('HSUBIA 0x01');
-                this.emitLdAToSym(sym);
-                this.asmLines.push('ADDIA 0x01');
+                this.emitLdAToSym(sym);       // 存回递减后的值
+                this.emitLdTempToA(t);        // 返回原值
             }
         }
     }
@@ -2745,6 +3068,30 @@ class SC8P053Compiler {
             if (innerLeft.type === 'subscript_expression') {
                 this.emitArrayStore(innerLeft, right, funcInfo);
                 this.emitArrayLoad(innerLeft, funcInfo);
+            } else if (innerLeft.type === 'pointer_expression') {
+                const opNode = innerLeft.child(0);
+                const argNode = innerLeft.child(1);
+                if (opNode && opNode.text === '*' && argNode) {
+                    this.emitLoadAccumulator(right, funcInfo);
+                    const t = this.allocTemp();
+                    this.emitLdAToTemp(t);
+                    this.emitLoadAccumulator(argNode, funcInfo);
+                    this.emitIndirectSetFSR();
+                    this.emitLdTempToA(t);
+                    this.asmLines.push('LD INDF,A');
+                }
+            } else if (innerLeft.type === 'unary_expression') {
+                const uOp = this.getChildByField(innerLeft, 'operator');
+                const uArg = innerLeft.childForFieldName('argument');
+                if (uOp && uOp.text === '*' && uArg) {
+                    this.emitLoadAccumulator(right, funcInfo);
+                    const t = this.allocTemp();
+                    this.emitLdAToTemp(t);
+                    this.emitLoadAccumulator(uArg, funcInfo);
+                    this.emitIndirectSetFSR();
+                    this.emitLdTempToA(t);
+                    this.asmLines.push('LD INDF,A');
+                }
             } else {
                 this.emitLoadAccumulator(right, funcInfo);
                 const sym = this.resolveSymbol(left, funcInfo);
@@ -2754,6 +3101,9 @@ class SC8P053Compiler {
             if (innerLeft.type === 'subscript_expression') {
                 this.emitArrayCompoundAssign(innerLeft, right, funcInfo, op);
                 this.emitArrayLoad(innerLeft, funcInfo);
+            } else if (innerLeft.type === 'pointer_expression' || innerLeft.type === 'unary_expression') {
+                this.emitAssignment(node, funcInfo);
+                this.emitLoadAccumulator(innerLeft, funcInfo);
             } else {
                 this.emitAssignment(node, funcInfo);
                 const sym = this.resolveSymbol(left, funcInfo);
@@ -2867,6 +3217,131 @@ class SC8P053Compiler {
         if (inner.type === 'assignment_expression') {
             this.emitAssignmentAsValue(inner, funcInfo);
             return;
+        }
+
+        if (inner.type === 'pointer_expression') {
+            const addr = this.extractAddr(inner);
+            if (addr !== null) {
+                // 常量地址解引用：*(u8 *)0xXX，读取该地址的内容
+                const equAddr = addr & 0x7F;
+                this.ensureBank(addr);
+                this.asmLines.push(`LD A,0x${equAddr.toString(16).toUpperCase().padStart(2, '0')}`);
+                return;
+            }
+            const opNode = inner.child(0);
+            const argNode = inner.child(1);
+            if (opNode && argNode) {
+                if (opNode.text === '&') {
+                    // 处理 &x, &arr[0] 等取地址操作
+                    if (argNode.type === 'identifier') {
+                        const sym = this.resolveSymbol(argNode, funcInfo);
+                        if (sym) {
+                            this.asmLines.push(`LDIA 0x${(sym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                        }
+                        return;
+                    } else if (argNode.type === 'subscript_expression') {
+                        // 处理 &arr[index]
+                        const arraySym = this.resolveArraySymbol(argNode, funcInfo);
+                        if (!arraySym) return;
+
+                        const indexNode = argNode.childForFieldName('index');
+                        if (!indexNode) return;
+
+                        const constIndex = this.getConstantValue(indexNode);
+                        if (constIndex !== null) {
+                            // &arr[constant]
+                            const addr = (arraySym.ramAddr + constIndex) & 0xFF;
+                            this.asmLines.push(`LDIA 0x${addr.toString(16).toUpperCase().padStart(2, '0')}`);
+                        } else {
+                            // &arr[variable]
+                            this.emitLoadAccumulator(indexNode, funcInfo);
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                            this.emitOpTemp('ADDA', t);
+                        }
+                        return;
+                    }
+                    return;
+                }
+                if (opNode.text === '*') {
+                    // 处理 *ptr++、*++ptr、*ptr--、*--ptr
+                    if (argNode.type === 'update_expression') {
+                        const updateOp = this.getChildByField(argNode, 'operator');
+                        const updateArg = argNode.childForFieldName('argument');
+                        if (updateOp && updateArg) {
+                            const ptrSym = this.resolveSymbol(updateArg, funcInfo);
+                            if (!ptrSym) {
+                                this.emitLoadAccumulator(argNode, funcInfo);
+                                this.emitIndirectRead();
+                                return;
+                            }
+
+                            if (updateOp.text === '++') {
+                                const isPrefix = updateOp.startPosition.column < updateArg.startPosition.column;
+                                if (isPrefix) {
+                                    this.emitLdSymToA(ptrSym);
+                                    this.asmLines.push('ADDIA 0x01');
+                                    this.emitLdAToSym(ptrSym);
+                                    this.emitIndirectRead();
+                                } else {
+                                    this.emitLdSymToA(ptrSym);
+                                    this.emitIndirectRead();
+                                    const t = this.allocTemp();
+                                    this.emitLdAToTemp(t);
+                                    this.emitLdSymToA(ptrSym);
+                                    this.asmLines.push('ADDIA 0x01');
+                                    this.emitLdAToSym(ptrSym);
+                                    this.emitLdTempToA(t);
+                                }
+                                return;
+                            } else if (updateOp.text === '--') {
+                                const isPrefix = updateOp.startPosition.column < updateArg.startPosition.column;
+                                if (isPrefix) {
+                                    this.emitLdSymToA(ptrSym);
+                                    this.asmLines.push('HSUBIA 0x01');
+                                    this.emitLdAToSym(ptrSym);
+                                    this.emitIndirectRead();
+                                } else {
+                                    this.emitLdSymToA(ptrSym);
+                                    this.emitIndirectRead();
+                                    const t = this.allocTemp();
+                                    this.emitLdAToTemp(t);
+                                    this.emitLdSymToA(ptrSym);
+                                    this.asmLines.push('HSUBIA 0x01');
+                                    this.emitLdAToSym(ptrSym);
+                                    this.emitLdTempToA(t);
+                                }
+                                return;
+                            }
+                        }
+                    }
+                    // 普通的 *ptr 解引用
+                    this.emitLoadAccumulator(argNode, funcInfo);
+
+                    // 检查是否是常量地址（如 (u8 *)0x06）
+                    const addr = this.extractAddr(argNode);
+                    if (addr !== null && addr >= 0x00 && addr <= 0x1F) {
+                        // SFR地址：使用直接寻址
+                        const equAddr = addr & 0x7F;
+                        this.ensureBank(addr);
+                        this.asmLines.push(`LD A,0x${equAddr.toString(16).toUpperCase().padStart(2, '0')}`);
+                    } else {
+                        this.emitIndirectRead();
+                    }
+                    return;
+                }
+            }
+        }
+
+        // 处理类型转换表达式：(u8 *)0xXX，加载地址值本身
+        if (inner.type === 'cast_expression') {
+            const valueNode = inner.childForFieldName('value');
+            if (valueNode && valueNode.type === 'number_literal') {
+                const addr = this.parseNumber(valueNode.text) & 0xFF;
+                this.asmLines.push(`LDIA 0x${addr.toString(16).toUpperCase().padStart(2, '0')}`);
+                return;
+            }
         }
     }
 
@@ -3078,6 +3553,20 @@ class SC8P053Compiler {
             return;
         }
 
+        if (op === '&') {
+            const sym = this.resolveSymbol(argument, funcInfo);
+            if (sym) {
+                this.asmLines.push(`LDIA 0x${(sym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+            }
+            return;
+        }
+
+        if (op === '*') {
+            this.emitLoadAccumulator(argument, funcInfo);
+            this.emitIndirectRead();
+            return;
+        }
+
         this.emitLoadAccumulator(argument, funcInfo);
     }
 
@@ -3106,8 +3595,7 @@ class SC8P053Compiler {
         this.emitLdAToTemp(t);
         this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
         this.emitOpTemp('ADDA', t);
-        this.asmLines.push('LD FSR,A');
-        this.asmLines.push('LD A,INDF');
+        this.emitIndirectRead();
     }
 
     private emitMultiply(left: Parser.SyntaxNode, right: Parser.SyntaxNode, funcInfo: Fn) {
@@ -3654,9 +4142,35 @@ class SC8P053Compiler {
         this.emitLdAToSym(sym);
     }
 
+    private extractAddr(node: Parser.SyntaxNode): number | null {
+        const inner = this.unwrapParentheses(node);
+        if (inner.type !== 'pointer_expression') return null;
+        let castNode: Parser.SyntaxNode | null = null;
+        for (let i = 0; i < inner.childCount; i++) {
+            const child = inner.child(i);
+            if (child && child.type === 'cast_expression') {
+                castNode = child;
+                break;
+            }
+        }
+        if (!castNode) return null;
+        const valueNode = castNode.childForFieldName('value');
+        if (!valueNode || valueNode.type !== 'number_literal') return null;
+        return this.parseNumber(valueNode.text) & 0xFF;
+    }
+
     private resolveSymbol(node: Parser.SyntaxNode, funcInfo: Fn): Sym | null {
         const inner = this.unwrapParentheses(node);
-        const name = inner.text.trim();
+        let name = inner.text.trim();
+        if (inner.type === 'pointer_declarator') {
+            for (let i = 0; i < inner.childCount; i++) {
+                const child = inner.child(i);
+                if (child && child.type === 'identifier') {
+                    name = child.text.trim();
+                    break;
+                }
+            }
+        }
         if (funcInfo.localSymbols.has(name)) return funcInfo.localSymbols.get(name)!;
         if (this.globalSymbols.has(name)) return this.globalSymbols.get(name)!;
         return null;

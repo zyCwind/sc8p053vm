@@ -537,7 +537,7 @@ export function parseIntelHex(hexContent: string): Uint16Array {
  * @param startAddress Starting address (default 0)
  * @returns Intel HEX formatted string
  */
-function romToIntelHex(rom: Uint16Array, startAddress: number = 0): string {
+export function toIntelHex(rom: Uint16Array, startAddress: number = 0): string {
     const lines: string[] = [];
     const bytesPerLine = 16; // 16 bytes per line (8 words)
 
@@ -614,13 +614,3 @@ export function assemble(source: string): {
     return new SC8P053Assembler().assemble(source);
 }
 
-/**
- * Assemble ASM source and convert to Intel HEX format
- * @param source Assembly source code
- * @param startAddress Starting address for HEX file (default 0)
- * @returns Intel HEX formatted string
- */
-export function assembleToHex(source: string, startAddress: number = 0): string {
-    const { rom } = assemble(source);
-    return romToIntelHex(rom, startAddress);
-}
