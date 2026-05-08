@@ -7,12 +7,13 @@
 import Parser from 'web-tree-sitter';
 import { assemble } from './asmc';
 
-let c: Parser.Language | null = null;
-
-Parser.init().then(() => {
-    Parser.Language.load('tree-sitter-c.wasm').then(language => c = language);
+const language = Parser.init().then(() => {
+    if (typeof process == "object" && typeof process.versions == "object" && typeof process.versions.node == "string") {
+        return Parser.Language.load(__dirname + '/../node_modules/tree-sitter-c/tree-sitter-c.wasm');
+    } else {
+        return Parser.Language.load('tree-sitter-c.wasm');
+    }
 });
-
 
 const RAM_GP_START = 0x20;
 const RAM_GP_END = 0x6F;
@@ -24,21 +25,7 @@ const ISR_SAVE_SIZE = 4;
 
 type Type = 'void' | 'u8' | 'i8' | 'bool';
 
-export interface DebugInfo {
-    lineNoMap: Map<number, number>;
-    fnMap: Map<string, number>;
-    varMap: Map<string, Sym[]>;
-}
-
-function toAsmName(name: string): string {
-    return 'V_' + name.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
-}
-
-function trimStart(s: string): string {
-    return s.replace(/^[\s]+/, '');
-}
-
-interface Sym {
+export interface Sym {
     name: string;
     asmName: string;
     type: Type;
@@ -49,6 +36,26 @@ interface Sym {
     isParam: boolean;
     paramIndex: number;
     frameOffset: number;
+    isStatic: boolean;
+}
+
+export interface FnRange {
+    start: number;
+    end: number;
+}
+
+export interface DebugInfo {
+    lineNoMap: Map<number, number>;
+    fnRanges: Map<string, FnRange[]>;
+    varMap: Map<string, Sym[]>;
+}
+
+function toAsmName(name: string): string {
+    return 'V_' + name.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+}
+
+function trimStart(s: string): string {
+    return s.replace(/^[\s]+/, '');
 }
 
 interface Fn {
@@ -106,6 +113,7 @@ interface CondFrame {
     active: boolean;
     elseSeen: boolean;
     parentActive: boolean;
+    branchTaken: boolean;
 }
 
 class Preprocessor {
@@ -320,7 +328,8 @@ class Preprocessor {
         this.condStack.push({
             active: condition,
             elseSeen: false,
-            parentActive: this.isActive()
+            parentActive: this.isActive(),
+            branchTaken: condition
         });
     }
 
@@ -329,7 +338,8 @@ class Preprocessor {
         this.condStack.push({
             active: result,
             elseSeen: false,
-            parentActive: this.condStack.length === 0 ? true : this.condStack[this.condStack.length - 1].active
+            parentActive: this.condStack.length === 0 ? true : this.condStack[this.condStack.length - 1].active,
+            branchTaken: result
         });
     }
 
@@ -342,11 +352,12 @@ class Preprocessor {
             throw new Error(`#elif after #else at line ${lineNo}`);
         }
         if (!frame.parentActive) return;
-        if (frame.active) {
+        if (frame.branchTaken) {
             frame.active = false;
         } else {
             const result = this.evaluateCondition(text, lineNo);
             frame.active = result;
+            if (result) frame.branchTaken = true;
         }
     }
 
@@ -360,7 +371,7 @@ class Preprocessor {
         }
         frame.elseSeen = true;
         if (!frame.parentActive) return;
-        frame.active = !frame.active;
+        frame.active = !frame.branchTaken;
     }
 
     private processEndif(): void {
@@ -371,9 +382,9 @@ class Preprocessor {
     }
 
     private evaluateCondition(text: string, lineNo: number): boolean {
-        const expanded = this.expandLine(text, lineNo);
-        const resolved = this.resolveDefined(expanded);
-        return this.evalConstExpr(resolved);
+        const resolved = this.resolveDefined(text);
+        const expanded = this.expandLine(resolved, lineNo);
+        return this.evalConstExpr(expanded);
     }
 
     private resolveDefined(text: string): string {
@@ -770,7 +781,6 @@ class SC8P053Compiler {
     private tempCounter: number = 0;
     private dryRun: boolean = false;
     private currentSourceLine: number = 0;
-    private fnAsmRanges: Map<string, { startAsmLine: number; endAsmLine: number }> = new Map();
 
     private tempName(idx: number): string {
         if (!this.currentFn) return `_T${idx}`;
@@ -784,9 +794,10 @@ class SC8P053Compiler {
         return idx;
     }
 
-    compile(source: string): { rom: Uint16Array; asm: string; debugInfo: DebugInfo } {
+    async compile(source: string): Promise<{ rom: Uint16Array; asm: string; debugInfo: DebugInfo }> {
         const preprocessor = new Preprocessor();
         const preprocessed = preprocessor.preprocess(source);
+        const c = await language;
         const parser = new Parser();
         parser.setLanguage(c);
         const tree = parser.parse(preprocessed);
@@ -799,7 +810,6 @@ class SC8P053Compiler {
         this.currentBank = 0;
         this.tempCounter = 0;
         this.currentSourceLine = 0;
-        this.fnAsmRanges.clear();
 
         this.collectDeclarations(tree.rootNode);
         this.buildCallGraph(tree.rootNode);
@@ -824,7 +834,8 @@ class SC8P053Compiler {
         this.emitOutput();
 
         const asmLineToSourceLine = new Map<number, number>();
-        const fnMarkerLines = new Map<string, number>();
+        const fnStartMarkerLines = new Map<string, number>();
+        const fnEndMarkerLines = new Map<string, number>();
         let lastSourceLine = 0;
         for (let i = 0; i < this.asmLines.length; i++) {
             const line = this.asmLines[i];
@@ -834,9 +845,15 @@ class SC8P053Compiler {
                 this.asmLines[i] = '';
                 continue;
             }
-            const fnMatch = line.match(/^;@FN (.+)$/);
-            if (fnMatch) {
-                fnMarkerLines.set(fnMatch[1], i);
+            const fnStartMatch = line.match(/^;@FN_START (.+)$/);
+            if (fnStartMatch) {
+                fnStartMarkerLines.set(fnStartMatch[1], i);
+                this.asmLines[i] = '';
+                continue;
+            }
+            const fnEndMatch = line.match(/^;@FN_END (.+)$/);
+            if (fnEndMatch) {
+                fnEndMarkerLines.set(fnEndMatch[1], i);
                 this.asmLines[i] = '';
                 continue;
             }
@@ -848,6 +865,11 @@ class SC8P053Compiler {
         const asmSource = this.asmLines.join('\n') + '\n';
         const { rom, debugInfo: asmDebugInfo } = assemble(asmSource);
 
+        const asmLineToPc = new Map<number, number>();
+        for (const [pc, asmLine] of asmDebugInfo.lineNoMap) {
+            asmLineToPc.set(asmLine - 1, pc);
+        }
+
         const lineNoMap = new Map<number, number>();
         for (const [pc, asmLine] of asmDebugInfo.lineNoMap) {
             const cLine = asmLineToSourceLine.get(asmLine - 1);
@@ -856,19 +878,34 @@ class SC8P053Compiler {
             }
         }
 
-        const fnMap = new Map<string, number>();
-        for (const [fname, markerLine] of fnMarkerLines) {
+        const findNextPcAfter = (markerLine: number): number | null => {
             for (let i = markerLine + 1; i < this.asmLines.length; i++) {
-                const line = this.asmLines[i].trim();
-                if (line.length === 0 || line.startsWith(';')) continue;
-                for (const [pc, asmLine] of asmDebugInfo.lineNoMap) {
-                    if (asmLine === i + 1) {
-                        fnMap.set(fname, pc);
-                        break;
-                    }
-                }
-                if (fnMap.has(fname)) break;
+                const pc = asmLineToPc.get(i);
+                if (pc !== undefined) return pc;
             }
+            return null;
+        };
+
+        const fnRanges = new Map<string, FnRange[]>();
+        for (const [fname, startMarker] of fnStartMarkerLines) {
+            const startPc = findNextPcAfter(startMarker);
+            if (startPc === null) continue;
+
+            const endMarker = fnEndMarkerLines.get(fname);
+            let endPc: number;
+            if (endMarker !== undefined) {
+                const nextPc = findNextPcAfter(endMarker);
+                if (nextPc !== null) {
+                    endPc = nextPc;
+                } else {
+                    const lastPc = [...asmLineToPc.values()].reduce((a, b) => Math.max(a, b), 0);
+                    endPc = lastPc + 1;
+                }
+            } else {
+                endPc = startPc + 1;
+            }
+
+            fnRanges.set(fname, [{ start: startPc, end: endPc }]);
         }
 
         const varMap = new Map<string, Sym[]>();
@@ -885,7 +922,7 @@ class SC8P053Compiler {
 
         const debugInfo: DebugInfo = {
             lineNoMap,
-            fnMap,
+            fnRanges,
             varMap
         };
 
@@ -1026,6 +1063,7 @@ class SC8P053Compiler {
 
         for (const [, finfo] of this.fns) {
             for (const [, sym] of finfo.localSymbols) {
+                if (sym.isStatic) continue;
                 sym.ramAddr = finfo.frameBase + sym.frameOffset;
                 sym.bank = this.getBankForAddr(sym.ramAddr);
             }
@@ -1193,11 +1231,35 @@ class SC8P053Compiler {
     }
 
     private emitLdArrayElemToA(sym: Sym, index: number) {
+        if (!sym.isArray) {
+            this.emitLdSymToA(sym);
+            if (index === 0) {
+                this.emitIndirectRead();
+            } else {
+                const t = this.allocTemp();
+                this.emitLdAToTemp(t);
+                this.asmLines.push(`ADDIA 0x${(index & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                this.emitIndirectRead();
+            }
+            return;
+        }
         this.ensureBank(sym.ramAddr);
         this.asmLines.push(`LD A,${sym.asmName}_${index}`);
     }
 
     private emitLdAToArrayElem(sym: Sym, index: number) {
+        if (!sym.isArray) {
+            const t = this.allocTemp();
+            this.emitLdAToTemp(t);
+            this.emitLdSymToA(sym);
+            if (index !== 0) {
+                this.asmLines.push(`ADDIA 0x${(index & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+            }
+            this.emitIndirectSetFSR();
+            this.emitLdTempToA(t);
+            this.asmLines.push('LD INDF,A');
+            return;
+        }
         this.ensureBank(sym.ramAddr);
         this.asmLines.push(`LD ${sym.asmName}_${index},A`);
     }
@@ -1267,12 +1329,17 @@ class SC8P053Compiler {
         for (const declaratorNode of declarators) {
             const { name, isArray, arraySize } = this.parseDeclarator(declaratorNode);
             const size = isArray ? arraySize : 1;
+
+            if (this.globalSymbols.has(name)) {
+                throw new Error(`Global variable '${name}' is already defined`);
+            }
+
             const addr = this.allocRam(size);
             const asmName = toAsmName(name);
 
             this.globalSymbols.set(name, {
                 name, asmName, type: ctype, ramAddr: addr, bank: this.getBankForAddr(addr),
-                isArray, arraySize, isParam: false, paramIndex: 0, frameOffset: -1
+                isArray, arraySize, isParam: false, paramIndex: 0, frameOffset: -1, isStatic: false
             });
 
             const initDecl = this.findNodeByType(declaratorNode, 'init_declarator');
@@ -1295,7 +1362,12 @@ class SC8P053Compiler {
                     if (constVal !== null) {
                         this.globalInits.push({ asmName, value: constVal & 0xFF, isArray: false, ramAddr: addr });
                     } else {
-                        throw new Error(`Global variable '${name}' initializer must be a constant expression (got: ${valueNode.text.trim()})`);
+                        const addrVal = this.getGlobalAddressValue(valueNode);
+                        if (addrVal !== null) {
+                            this.globalInits.push({ asmName, value: addrVal & 0xFF, isArray: false, ramAddr: addr });
+                        } else {
+                            throw new Error(`Global variable '${name}' initializer must be a constant expression (got: ${valueNode.text.trim()})`);
+                        }
                     }
                 }
             }
@@ -1314,7 +1386,17 @@ class SC8P053Compiler {
 
         const nameNode = funcDeclarator.childForFieldName('declarator');
         const funcName = nameNode ? nameNode.text.trim() : '';
-        const asmFuncName = toAsmName(funcName);
+
+        let isISR = false;
+        for (let i = 0; i < funcDeclarator.childCount; i++) {
+            const child = funcDeclarator.child(i);
+            if (child && child.type === 'identifier' && child.text === '__interrupt') {
+                isISR = true;
+                break;
+            }
+        }
+
+        const asmFuncName = isISR ? '__INTERRUPT' : toAsmName(funcName);
 
         const params = this.extractParams(funcDeclarator, funcName);
 
@@ -1325,7 +1407,7 @@ class SC8P053Compiler {
             params,
             localSymbols: new Map(),
             labelCounter: 0,
-            isISR: funcName === 'interrupt',
+            isISR,
             tempCount: 0,
             savedTempCount: 0,
             calls: new Set(),
@@ -1343,13 +1425,16 @@ class SC8P053Compiler {
                 ramAddr: -1, bank: -1,
                 isArray: false, arraySize: 0,
                 isParam: true, paramIndex: paramIdx++,
-                frameOffset: frameOffset++
+                frameOffset: frameOffset++, isStatic: false
             });
         }
 
         if (bodyNode) frameOffset = this.collectLocalDeclarations(bodyNode, funcInfo, frameOffset);
 
         funcInfo.frameSize = frameOffset;
+        if (this.fns.has(funcName)) {
+            throw new Error(`Function '${funcName}' is already defined`);
+        }
         this.fns.set(funcName, funcInfo);
     }
 
@@ -1358,11 +1443,20 @@ class SC8P053Compiler {
             const typeNode = node.childForFieldName('type');
             if (!typeNode) return frameOffset;
 
+            let isStatic = false;
+            for (let i = 0; i < node.childCount; i++) {
+                const child = node.child(i);
+                if (child && child.type === 'storage_class_specifier' && child.text.trim() === 'static') {
+                    isStatic = true;
+                    break;
+                }
+            }
+
             const ctype = this.resolveType(typeNode);
             const declarators: Parser.SyntaxNode[] = [];
             for (let i = 0; i < node.childCount; i++) {
                 const child = node.child(i);
-                if (child && child.isNamed && child.type !== 'sized_type_specifier' && child.type !== 'primitive_type') {
+                if (child && child.isNamed && child.type !== 'sized_type_specifier' && child.type !== 'primitive_type' && child.type !== 'storage_class_specifier') {
                     declarators.push(child);
                 }
             }
@@ -1377,14 +1471,37 @@ class SC8P053Compiler {
                     throw new Error(`Variable '${name}' redeclared in function '${funcInfo.name}' (shadowing not supported)`);
                 }
 
-                funcInfo.localSymbols.set(name, {
-                    name, asmName, type: ctype,
-                    ramAddr: -1, bank: -1,
-                    isArray, arraySize,
-                    isParam: false, paramIndex: 0,
-                    frameOffset: offset
-                });
-                offset += size;
+                if (isStatic) {
+                    const addr = this.allocRam(size);
+                    funcInfo.localSymbols.set(name, {
+                        name, asmName, type: ctype,
+                        ramAddr: addr, bank: this.getBankForAddr(addr),
+                        isArray, arraySize,
+                        isParam: false, paramIndex: 0,
+                        frameOffset: -1, isStatic: true
+                    });
+                    const initDecl = this.findNodeByType(declaratorNode, 'init_declarator');
+                    if (initDecl) {
+                        const valueNode = initDecl.childForFieldName('value');
+                        if (valueNode) {
+                            const constVal = this.getConstantValue(valueNode);
+                            if (constVal !== null) {
+                                this.globalInits.push({ asmName, value: constVal & 0xFF, isArray: false, ramAddr: addr });
+                            }
+                        }
+                    } else {
+                        this.globalInits.push({ asmName, value: 0, isArray: false, ramAddr: addr });
+                    }
+                } else {
+                    funcInfo.localSymbols.set(name, {
+                        name, asmName, type: ctype,
+                        ramAddr: -1, bank: -1,
+                        isArray, arraySize,
+                        isParam: false, paramIndex: 0,
+                        frameOffset: offset, isStatic: false
+                    });
+                    offset += size;
+                }
             }
             return offset;
         }
@@ -1424,6 +1541,12 @@ class SC8P053Compiler {
             text === 'signed int' ||
             text === 'signed short' ||
             text === 'signed char') return 'i8';
+        if (text.startsWith('float') || text.startsWith('double')) {
+            throw new Error(`Floating-point type '${text}' is not supported on this target`);
+        }
+        if (text.startsWith('struct') || text.startsWith('union') || text.startsWith('enum')) {
+            throw new Error(`Type '${text.split(/\s/)[0]}' is not supported on this target`);
+        }
         return 'u8';
     }
 
@@ -1448,6 +1571,9 @@ class SC8P053Compiler {
         const arrayDecl = this.findNodeByType(node, 'array_declarator');
         if (arrayDecl) {
             const nameNode = arrayDecl.childForFieldName('declarator');
+            if (nameNode && nameNode.type === 'array_declarator') {
+                throw new Error(`Multi-dimensional arrays are not supported on this target`);
+            }
             const sizeNode = arrayDecl.childForFieldName('size');
             let size = 1;
             if (sizeNode) {
@@ -1496,7 +1622,7 @@ class SC8P053Compiler {
         this.asmLines.push('JP V_MAIN');
         if (hasISR) {
             this.asmLines.push('ORG 0x04');
-            this.asmLines.push('JP V_INTERRUPT');
+            this.asmLines.push('JP __INTERRUPT');
         }
         // this.asmLines.push('');
 
@@ -1548,7 +1674,7 @@ class SC8P053Compiler {
         if (!this.dryRun) {
             this.currentSourceLine = node.startPosition.row + 1;
             this.asmLines.push(`;@LINE ${this.currentSourceLine}`);
-            this.asmLines.push(`;@FN ${funcName}`);
+            this.asmLines.push(`;@FN_START ${funcName}`);
         }
         this.asmLines.push(`${funcInfo.asmName}:`);
 
@@ -1586,12 +1712,13 @@ class SC8P053Compiler {
             this.asmLines.push('RETI');
         } else {
             if (!funcInfo.hasEarlyReturn && funcInfo.returnType !== 'void') {
-                // console.warn(`Warning: non-void function '${funcName}' does not return a value on all paths`);
             }
             this.ensureBank0();
             this.asmLines.push('RET');
         }
-        // this.asmLines.push('');
+        if (!this.dryRun) {
+            this.asmLines.push(`;@FN_END ${funcName}`);
+        }
 
         this.currentFn = null;
     }
@@ -1822,10 +1949,19 @@ class SC8P053Compiler {
     }
 
     private emitDeclarationInit(node: Parser.SyntaxNode, funcInfo: Fn) {
+        let isStaticDecl = false;
+        for (let i = 0; i < node.childCount; i++) {
+            const child = node.child(i);
+            if (child && child.type === 'storage_class_specifier' && child.text.trim() === 'static') {
+                isStaticDecl = true;
+                break;
+            }
+        }
+
         for (let i = 0; i < node.childCount; i++) {
             const child = node.child(i);
             if (!child || !child.isNamed) continue;
-            if (child.type === 'sized_type_specifier' || child.type === 'primitive_type') continue;
+            if (child.type === 'sized_type_specifier' || child.type === 'primitive_type' || child.type === 'storage_class_specifier') continue;
 
             const initDecl = this.findNodeByType(child, 'init_declarator');
             const actualNode = initDecl || child;
@@ -1854,6 +1990,9 @@ class SC8P053Compiler {
                     sym = this.resolveSymbol(declNode, funcInfo);
                 }
             }
+
+            if (isStaticDecl && sym && sym.isStatic) continue;
+
             if (valueNode) {
                 if (sym && sym.isArray && valueNode.type === 'initializer_list') {
                     let elemIdx = 0;
@@ -2332,8 +2471,13 @@ class SC8P053Compiler {
         this.emitLoadAccumulator(indexNode, funcInfo);
         const t2 = this.allocTemp();
         this.emitLdAToTemp(t2);
-        this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
-        this.emitOpTemp('ADDA', t2);
+        if (arraySym.isArray) {
+            this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+            this.emitOpTemp('ADDA', t2);
+        } else {
+            this.emitLdSymToA(arraySym);
+            this.emitOpTemp('ADDA', t2);
+        }
         this.asmLines.push('CLRB STATUS,5');
         this.currentAsmBank = 0;
         this.asmLines.push('LD FSR,A');
@@ -2793,13 +2937,21 @@ class SC8P053Compiler {
         }
     }
 
-    private emitCallExpression(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitCallExpression(node: Parser.SyntaxNode, funcInfo: Fn, usedAsValue: boolean = false) {
         const funcNode = node.childForFieldName('function');
         const argsNode = node.childForFieldName('arguments');
         if (!funcNode) return;
 
         const funcName = funcNode.text.trim();
         const targetFunc = this.fns.get(funcName);
+
+        if (!targetFunc) {
+            throw new Error(`Function '${funcName}' is not defined`);
+        }
+
+        if (targetFunc.returnType === 'void' && usedAsValue) {
+            throw new Error(`Function '${funcName}' returns void and cannot be used as a value`);
+        }
 
         if (argsNode && targetFunc) {
             const args: Parser.SyntaxNode[] = [];
@@ -2808,6 +2960,9 @@ class SC8P053Compiler {
                 if (child && child.type !== ',' && child.type !== '(' && child.type !== ')') args.push(child);
             }
             if (args.length < targetFunc.params.length) {
+                throw new Error(`Function '${funcName}' expects ${targetFunc.params.length} argument(s), but ${args.length} provided`);
+            }
+            if (args.length > targetFunc.params.length) {
                 throw new Error(`Function '${funcName}' expects ${targetFunc.params.length} argument(s), but ${args.length} provided`);
             }
             const temps: number[] = [];
@@ -3145,6 +3300,11 @@ class SC8P053Compiler {
                 } else {
                     this.emitLdSymToA(sym);
                 }
+            } else {
+                const name = inner.text.trim();
+                if (!this.fns.has(name)) {
+                    throw new Error(`Variable '${name}' is not defined`);
+                }
             }
             return;
         }
@@ -3165,7 +3325,7 @@ class SC8P053Compiler {
         }
 
         if (inner.type === 'call_expression') {
-            this.emitCallExpression(inner, funcInfo);
+            this.emitCallExpression(inner, funcInfo, true);
             return;
         }
 
@@ -3593,8 +3753,13 @@ class SC8P053Compiler {
         const t = this.allocTemp();
         this.emitLoadAccumulator(indexNode, funcInfo);
         this.emitLdAToTemp(t);
-        this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
-        this.emitOpTemp('ADDA', t);
+        if (arraySym.isArray) {
+            this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+            this.emitOpTemp('ADDA', t);
+        } else {
+            this.emitLdSymToA(arraySym);
+            this.emitOpTemp('ADDA', t);
+        }
         this.emitIndirectRead();
     }
 
@@ -4188,6 +4353,29 @@ class SC8P053Compiler {
         return this.resolveSymbol(arrayNode, funcInfo);
     }
 
+    private getGlobalAddressValue(node: Parser.SyntaxNode): number | null {
+        const inner = this.unwrapParentheses(node);
+        if (inner.type === 'pointer_expression') {
+            const opNode = inner.child(0);
+            const argNode = inner.child(1);
+            if (opNode && opNode.text === '&' && argNode) {
+                const name = argNode.text.trim();
+                const sym = this.globalSymbols.get(name);
+                if (sym) return sym.ramAddr;
+            }
+        }
+        if (inner.type === 'identifier') {
+            const name = inner.text.trim();
+            const sym = this.globalSymbols.get(name);
+            if (sym && sym.isArray) return sym.ramAddr;
+        }
+        if (inner.type === 'cast_expression') {
+            const argNode = inner.childForFieldName('value');
+            if (argNode) return this.getGlobalAddressValue(argNode);
+        }
+        return null;
+    }
+
     private getConstantValue(node: Parser.SyntaxNode): number | null {
         const inner = this.unwrapParentheses(node);
         if (inner.type === 'number_literal') return this.parseNumber(inner.text);
@@ -4267,6 +4455,6 @@ class SC8P053Compiler {
     }
 }
 
-export function compile(source: string): { rom: Uint16Array; asm: string; debugInfo: DebugInfo } {
+export async function compile(source: string): Promise<{ rom: Uint16Array; asm: string; debugInfo: DebugInfo }> {
     return new SC8P053Compiler().compile(source);
 }

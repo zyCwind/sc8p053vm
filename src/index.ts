@@ -5,5 +5,5 @@
  */
 
 export { DebugInfo as AsmDebugInfo, assemble, parseIntelHex, toIntelHex } from './asmc';
-export { compile, DebugInfo } from './cc';
+export { compile, DebugInfo, FnRange, Sym } from './cc';
 export { VM } from './vm';

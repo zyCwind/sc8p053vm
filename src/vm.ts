@@ -120,7 +120,7 @@ export class VM {
     private rom: Uint16Array;          // 程序内存(1K×16位)
     private ram: Uint8Array;           // 数据内存(256字节)
     private stack: Uint16Array;        // 8级堆栈(10位地址)
-    private stackPtr: number = 0;      // 堆栈指针(0-7)
+    private sp: number = 0;      // 堆栈指针(0-7)
     private pc: number = 0;            // 程序计数器(10位)
     private acc: number = 0;           // 累加器(8位)
     private wdtElapsedTimeNs: number = 0; // Elapsed time for WDT in nanoseconds
@@ -206,7 +206,7 @@ export class VM {
 
         // 初始化堆栈
         this.stack = new Uint16Array(VM.STACK_SIZE);
-        this.stackPtr = 0;
+        this.sp = 0;
 
         // 初始化配置
         this.config = { ...config };
@@ -543,10 +543,10 @@ export class VM {
         switch (opcode) {
             case 0x0000: return 1;
             case 0x0008:
-                if (this.stackPtr > 0) { this.stackPtr--; nextPc.value = this.stack[this.stackPtr] & 0x03FF; }
+                if (this.sp > 0) { this.sp--; nextPc.value = this.stack[this.sp] & 0x03FF; }
                 return 2;
             case 0x0009:
-                if (this.stackPtr > 0) { this.stackPtr--; nextPc.value = this.stack[this.stackPtr] & 0x03FF; }
+                if (this.sp > 0) { this.sp--; nextPc.value = this.stack[this.sp] & 0x03FF; }
                 { let intcon = this.readRam(VM.SFR_INTCON); intcon |= VM.INTCON_GIE; this.writeRam(VM.SFR_INTCON, intcon); }
                 return 2;
             case 0x0063:
@@ -569,7 +569,7 @@ export class VM {
         switch (opcode & 0xFF00) {
             case 0x3000: this.acc = imm; return 1;
             case 0x3400:
-                if (this.stackPtr > 0) { this.stackPtr--; nextPc.value = this.stack[this.stackPtr] & 0x03FF; }
+                if (this.sp > 0) { this.sp--; nextPc.value = this.stack[this.sp] & 0x03FF; }
                 this.acc = imm;
                 return 2;
             case 0x3800:
@@ -627,8 +627,8 @@ export class VM {
                 return 1;
             }
             case 0x2000:
-                if (this.stackPtr < VM.STACK_SIZE) {
-                    this.stack[this.stackPtr] = nextPc.value & 0x03FF; this.stackPtr++;
+                if (this.sp < VM.STACK_SIZE) {
+                    this.stack[this.sp] = nextPc.value & 0x03FF; this.sp++;
                 } else {
                     for (let i = 0; i < VM.STACK_SIZE - 1; i++) this.stack[i] = this.stack[i + 1];
                     this.stack[VM.STACK_SIZE - 1] = nextPc.value & 0x03FF;
@@ -1957,9 +1957,9 @@ export class VM {
         this.ram[VM.SFR_INTCON] = intcon;
 
         // 保存当前PC到堆栈
-        if (this.stackPtr < VM.STACK_SIZE) {
-            this.stack[this.stackPtr] = this.pc & 0x03FF;
-            this.stackPtr++;
+        if (this.sp < VM.STACK_SIZE) {
+            this.stack[this.sp] = this.pc & 0x03FF;
+            this.sp++;
         } else {
             // 堆栈溢出，覆盖最早的条目
             for (let i = 0; i < VM.STACK_SIZE - 1; i++) {
@@ -2193,7 +2193,7 @@ export class VM {
         // 初始化CPU寄存器
         this.pc = 0x0000; // 复位向量
         this.acc = 0x00;
-        this.stackPtr = 0;
+        this.sp = 0;
         this.stack.fill(0x0000);
 
         // 初始化定时器和看门狗
@@ -2285,7 +2285,7 @@ export class VM {
             acc: this.acc,
 
             // Stack - direct reference (can be modified for debugging)
-            stackPtr: this.stackPtr,
+            sp: this.sp,
             stack: this.stack,
 
             // RAM - direct reference (can be modified for debugging)
