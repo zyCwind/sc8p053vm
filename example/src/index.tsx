@@ -367,8 +367,8 @@ class App extends React.Component<{}, {
                                     this.state.debugInfo?.varMap.get(currentFn)?.map((sym, index) => (
                                         <div key={index} className="state-item">
                                             {
-                                                sym.isArray ? <>
-                                                    <span className="state-label">{`${sym.name}<${sym.arraySize}>`}:</span>
+                                                sym.typeInfo.isArray ? <>
+                                                    <span className="state-label">{`${sym.name}<${sym.typeInfo.arraySize}>`}:</span>
                                                     <span className="state-value">{`0x${sym.ramAddr.toString(16).toUpperCase().padStart(2, '0')}`}</span>
                                                 </> : <>
                                                     <span className="state-label">{sym.name}:</span>
@@ -389,8 +389,8 @@ class App extends React.Component<{}, {
                                     this.state.debugInfo?.varMap.get('global')?.map((sym, index) => (
                                         <div key={index} className="state-item">
                                             {
-                                                sym.isArray ? <>
-                                                    <span className="state-label">{`${sym.name}<${sym.arraySize}>`}:</span>
+                                                sym.typeInfo.isArray ? <>
+                                                    <span className="state-label">{`${sym.name}<${sym.typeInfo.arraySize}>`}:</span>
                                                     <span className="state-value">{`0x${sym.ramAddr.toString(16).toUpperCase().padStart(2, '0')}`}</span>
                                                 </> : <>
                                                     <span className="state-label">{`${sym.name}`}:</span>

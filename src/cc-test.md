@@ -1278,4 +1278,299 @@
 
 **测试覆盖**: ISR with __interrupt syntax compiles correctly, void interrupt() is a normal function, ISR asm label is __INTERRUPT
 
-**测试覆盖**: 491 个测试用例（cc-test.js），491/491 全部通过
+### Bug 98: CFG 数据流分析 - 非void函数缺少返回路径检查
+
+**问题**: 在实现 CFG 之前，编译器没有正确检查非 void 函数是否在所有代码路径上返回值。多个场景下编译器静默通过：
+1. 函数体没有任何 return 语句
+2. if 分支有 return 但没有 else 分支
+3. while(1) 空循环没有 return
+4. while(1) break 后没有 return
+5. for 循环后没有 return
+6. continue 导致 return 不可达
+7. switch 缺少 default 且没有 return
+8. 嵌套循环中的返回路径分析错误
+
+**修复**:
+1. 实现 CFG（控制流图）构建：BasicBlock 结构，buildCFG/buildCFGCompound/buildCFGIf/buildCFGWhile/buildCFGFor/buildCFGDoWhile/buildCFGSwitch
+2. 实现三阶段数据流分析 `cfgAllPathsReturn`：
+   - 第一阶段：前向数据流分析，传播 returns/not_returns 状态
+   - 第二阶段：对循环中的 unknown 块，区分有退出边和无退出边两种情况：
+     - 有退出边：检查所有退出边是否到达 returns
+     - 无退出边（纯无限循环）：使用 `canReachReturn` 检查循环内是否可达 return
+   - 第三阶段：再次前向传播，处理循环块标记后的级联效果
+3. 修复条件循环 CFG 结构：loopBlock → loopExit（条件为假时退出）而非 entry → loopExit
+4. 修复 infinite terminator 不覆盖 return terminator
+5. 处理 continue 语句正确连接回 loopHeader
+
+**测试覆盖**: error: non-void function no return (Bug 97), error: if-return no else (Bug 97), while(1) return compiles (Bug 97), error: while(1) no return (Bug 97), while(1) break + return after compiles (Bug 97), error: while(1) break no return after (Bug 97), for loop with return after compiles (Bug 97), error: for loop no return (Bug 97), do-while(1) return compiles (Bug 97), error: do-while(1) no return (Bug 97), error: while(1) continue no return (Bug 97), do-while(1) conditional continue + return compiles (Bug 97), error: do-while(1) conditional continue no return (Bug 97), switch all cases return compiles (Bug 97), error: switch missing default no return (Bug 97), nested while(1) inner break + return compiles (Bug 97)
+
+**测试覆盖**: 509 个测试用例（cc-test.js），509/509 全部通过
+
+---
+
+## 第1轮：Parse AST 阶段静默忽略 Bug（Bug 65-71）
+
+### Bug 65: tree-sitter ERROR/MISSING 节点未检测
+
+**位置**: compile 方法
+
+**问题**: tree-sitter 在解析语法错误的代码时会生成 `ERROR` 或 `MISSING` 节点，但编译器从未检查这些节点，导致语法错误被静默忽略，编译通过但生成不正确的代码或不生成代码
+**影响**: `a = ;`, `1 = 1;`, `5 + ;` 等明显语法错误不报错
+**修复**: 添加 `checkParseErrors` 方法，在编译前递归遍历 AST 检查 `ERROR` 和 `MISSING` 节点，发现时抛出语法错误
+
+**VM验证**: ✅ `a = ;` → Syntax error, `1 = 1` → Syntax error, `5 + ;` → Syntax error: unexpected end of input
+
+### Bug 66: 赋值给非左值静默忽略
+
+**位置**: emitAssignment
+
+**问题**: 当赋值语句的左侧不是有效的左值（如 `1 = 1`, `(1+2) = 5`）时，`resolveSymbol` 返回 null，代码静默跳过赋值操作，不生成任何代码也不报错
+**影响**: `1 = 1;`, `(1+2) = 5;`, `5 += 3;` 等非法赋值不报错
+**修复**: 添加 `isValidLvalue` 辅助方法；在 `emitAssignment` 中，当 `resolveSymbol` 返回 null 时抛出 "not an lvalue" 错误
+
+**VM验证**: ✅ `(1+2) = 5` → Cannot assign to '(1+2)' - not an lvalue
+
+### Bug 67: 顶层 struct/enum/typedef 声明静默忽略
+
+**位置**: analyzeAll
+
+**问题**: `analyzeAll` 只处理 `declaration` 和 `function_definition` 类型的顶层节点，`struct_specifier`、`enum_specifier`、`type_definition` 等节点被完全忽略，不报错也不处理
+**影响**: `struct foo { int x; };`, `enum { A, B };`, `typedef unsigned char u8;` 等声明被静默忽略
+**修复**: 在 `analyzeAll` 中添加对 `type_definition`、`struct_specifier`、`enum_specifier`、`union_specifier` 的处理，抛出不支持的错误
+
+**VM验证**: ✅ `struct foo { int x; };` → 'struct' is not supported, `enum { A, B };` → 'enum' is not supported, `typedef` → 'typedef' is not supported
+
+### Bug 68: goto 语句静默忽略
+
+**位置**: emitStatement
+
+**问题**: `emitStatement` 的 switch 中没有 `goto_statement` 的处理分支，goto 语句被完全忽略
+**影响**: `goto label;` 不生成任何代码也不报错
+**修复**: 在 `emitStatement` 中添加 `goto_statement` 分支，抛出不支持的错误
+
+**VM验证**: ✅ `goto label;` → 'goto' is not supported on this target
+
+### Bug 69: labeled 语句静默忽略
+
+**位置**: emitStatement
+
+**问题**: `emitStatement` 的 switch 中没有 `labeled_statement` 的处理分支，标签语句被完全忽略
+**影响**: `label: a = 5;` 中标签被忽略，后续语句可能被错误处理
+**修复**: 在 `emitStatement` 中添加 `labeled_statement` 分支，抛出不支持的错误；同时添加 `default` 分支捕获所有未处理的语句类型
+
+**VM验证**: ✅ `label: a = 5;` → Labels are not supported on this target
+
+### Bug 70: 非void函数空 return 未报错
+
+**位置**: emitReturnStatement
+
+**问题**: `emitReturnStatement` 只检查了 void 函数返回值和 ISR 函数返回值的错误，但没有检查非 void 函数的空 `return;` 语句
+**影响**: `unsigned char foo() { return; }` 编译通过，但函数返回未定义值
+**修复**: 在 `emitReturnStatement` 中添加检查：非 void 函数执行 `return;` 时抛出 "must return a value" 错误
+
+**VM验证**: ✅ `unsigned char foo() { return; }` → Non-void function 'foo' must return a value; `void foo() { return; }` 仍然正常
+
+### Bug 71: 未知类型默认为 u8
+
+**位置**: resolveType
+
+**问题**: `resolveType` 方法在无法识别类型时默认返回 `'u8'`，导致使用未知类型名（如 `a a = 2;` 中的 `a`）声明变量时不报错，而是被当作 unsigned char 处理
+**影响**: `a a = 2;`, `mytype x;` 等使用未定义类型名的声明不报错
+**修复**: 在 `resolveType` 中明确列出所有支持的 unsigned 类型，对 `type_identifier` 类型的节点（即用户自定义类型名）抛出 "Unknown type" 错误
+
+**VM验证**: ✅ `mytype a = 2;` → Unknown type 'mytype' (typedef is not supported on this target)
+
+**测试覆盖**: 523 个测试用例（cc-test.js），523/523 全部通过
+
+---
+
+## 第2轮：Parse AST 阶段静默忽略 Bug（Bug 72）
+
+### Bug 72: 对非左值进行 ++/-- 操作静默忽略
+
+**位置**: emitUpdateExpression
+
+**问题**: `emitUpdateExpression` 中，当 `resolveSymbol` 对参数返回 null 时（如 `++5`, `5++`, `++(a+1)`, `(a+1)++`），函数直接 `return` 而不报错，导致对非左值的自增/自减操作被静默忽略
+**影响**: `++5;`, `5++;`, `++(a+1);`, `(a+1)++;` 等非法操作不报错
+**修复**: 在 `emitUpdateExpression` 中，当 `resolveSymbol` 返回 null 时，调用 `isValidLvalue` 检查参数是否为有效左值，如果不是则抛出 "not an lvalue" 错误
+
+**VM验证**: ✅ `++5` → Cannot increment/decrement '5' - not an lvalue; `5++` → 同上; `++(a+1)` → 同上; `(a+1)++` → 同上; `a++` 和 `++a` 仍然正常工作
+
+### 附带修复：ptr-to-ptr 声明解析问题
+
+**位置**: parseDeclarator
+
+**问题**: `parseDeclarator` 处理 `pointer_declarator` 时只检查直接子节点是否为 `identifier` 或 `array_declarator`，未递归处理嵌套的 `pointer_declarator`，导致 `unsigned char **pp;` 声明无法正确解析变量名 `pp`
+**影响**: `unsigned char **pp; pp = &p;` 报错 "Cannot assign to 'pp' - not an lvalue"（误报）
+**修复**: 在 `parseDeclarator` 的 `pointer_declarator` 分支中添加对嵌套 `pointer_declarator` 的递归处理
+
+**测试覆盖**: 529 个测试用例（cc-test.js），529/529 全部通过
+
+---
+
+## 第3轮：Parse AST 阶段静默忽略 Bug（Bug 73-76）
+
+### Bug 73: 对字面量取地址 `&5` 静默通过
+
+**位置**: emitLoadAccumulator 中 `pointer_expression` 的 `&` 分支
+
+**问题**: 当 `&` 操作符的参数是 `number_literal`（如 `&5`）时，代码走到 `return` 不报错也不生成代码
+**影响**: `p = &5;` 静默通过编译，指针 `p` 未被赋值
+**修复**: 在 `&` 分支末尾，对非 `identifier` 和非 `subscript_expression` 的参数抛出 "Cannot take address of '...' - not an lvalue" 错误
+
+**VM验证**: ✅ `p = &5;` → Cannot take address of '5' - not an lvalue
+
+### Bug 74: 对表达式取地址 `&(a+1)` 静默通过
+
+**位置**: 同 Bug 73
+
+**问题**: 当 `&` 操作符的参数是 `binary_expression`（如 `&(a+1)`）时，同样静默跳过
+**影响**: `p = &(a+1);` 静默通过编译
+**修复**: 同 Bug 73，统一在 `&` 分支末尾抛出错误
+
+**VM验证**: ✅ `p = &(a+1);` → Cannot take address of '(a+1)' - not an lvalue
+
+### Bug 75: 解引用字面量 `*5` 静默通过
+
+**位置**: emitLoadAccumulator 中 `pointer_expression` 的 `*` 分支
+
+**问题**: 当 `*` 操作符的参数是 `number_literal`（如 `*5`）时，代码将 5 当作地址去读取内存，这在语义上是错误的
+**影响**: `a = *5;` 静默通过编译，读取了地址 5 的内存值
+**修复**: 在 `*` 分支开头，检查解包后的参数是否为 `number_literal`，如果是则抛出 "Cannot dereference '...' - use a cast expression like *(u8 *)0xXX instead" 错误
+
+**VM验证**: ✅ `a = *5;` → Cannot dereference '5' - use a cast expression like *(u8 *)0xXX instead
+
+### Bug 76: `long`/`unsigned`/`signed` 等不支持类型静默默认为 u8
+
+**位置**: resolveType
+
+**问题**: `resolveType` 方法在无法识别类型时（如 `long`、`unsigned`、`signed`、`long long`、`unsigned long` 等），走到最后的 `return 'u8'`，静默将这些不支持类型当作 u8 处理
+**影响**: `long a;`, `unsigned a;`, `signed a;`, `long long a;` 等声明不报错
+**修复**: 在 `resolveType` 中添加对 `long`、`unsigned`、`signed` 的显式检查，抛出 "Type '...' is not supported on this target" 错误；将最后的 `return 'u8'` 改为 `throw new Error`，确保任何未知类型都报错
+
+**VM验证**: ✅ `long a;` → Type 'long' is not supported on this target; `unsigned a;` → 同上; `signed a;` → 同上
+
+**测试覆盖**: 537 个测试用例（cc-test.js），537/537 全部通过
+
+---
+
+## 第4轮：指针类型检查缺失（Bug 77）
+
+### Bug 77: 指针类型系统缺失导致非指针解引用和类型不匹配静默通过
+
+**位置**: 全局类型系统设计缺陷
+
+**问题**: 编译器没有区分指针和非指针类型，导致以下情况静默通过：
+- 对非指针变量解引用：`unsigned char a; *a = 5;` 或 `unsigned char b; b = *a;`
+- 对非指针表达式解引用：`unsigned char a; *(a+1) = 5;`
+- 指针赋值给非指针变量：`unsigned char *p; unsigned char b; b = p;`
+- 非指针赋值给指针变量：`unsigned char a; unsigned char *p; p = a;`（非数字字面量）
+- 取地址赋值给非指针变量：`unsigned char a; unsigned char b; b = &a;`
+
+**影响**: 严重类型安全问题，可能导致内存访问错误和难以调试的运行时问题
+
+**修复**: 实现完整的指针类型检查系统：
+1. 在 `Sym` 接口添加 `isPointer` 字段区分指针变量
+2. 修改 `parseDeclarator` 返回指针信息
+3. 更新所有符号创建位置设置 `isPointer` 标记
+4. 添加 `isPointerType()` 方法判断表达式是否产生指针值
+5. 添加 `isDereferenceable()` 方法判断表达式是否可解引用
+6. 在赋值操作中添加指针类型兼容性检查
+7. 在解引用操作中添加可解引用性检查
+8. 在函数接口添加 `returnIsPointer` 字段跟踪函数返回类型
+9. 支持数组名到指针的隐式转换（`p = arr;`）
+10. 支持指针算术表达式（`p + 1`、`p - 1`）
+
+**VM验证**: ✅ `*a` → Cannot dereference 'a' - not a pointer type; `b = p` → Cannot assign pointer to non-pointer variable 'b'; `b = &a` → Cannot assign pointer to non-pointer variable 'b'
+
+**测试覆盖**: 546 个测试用例（cc-test.js），546/546 全部通过
+
+---
+
+## 第5轮：类型系统重构 — 从补丁方法到独立类型检查 Pass
+
+### Bug 80: 类型检查采用补丁方法，不足以覆盖所有场景
+
+**位置**: 全局架构设计缺陷
+
+**问题**: 之前的类型检查是在代码生成阶段（emit）中通过 ad-hoc 补丁实现的，存在以下不足：
+- 每种操作需要单独添加检查，容易遗漏
+- 检查逻辑分散在 `emitAssignment`、`emitLoadAccumulator`、`emitBinaryExpression` 等方法中
+- 无法系统性地覆盖所有表达式类型
+- 新增类型检查需要修改代码生成逻辑，违反关注点分离原则
+
+**影响**: 类型检查不完整，某些非法操作可能静默通过
+
+**修复**: 实现独立的类型检查 Pass，在 AST 分析后、代码生成前执行：
+
+1. **定义 TypeInfo 类型系统**：
+   - `TypeKind = 'void' | 'u8' | 'i8' | 'bool' | 'ptr' | 'array'`
+   - `TypeInfo = { kind: TypeKind; arraySize?: number }`
+   - `PRIMITIVE_TYPE_INFO` 映射表
+
+2. **实现 `typeOf()` 方法**：为所有表达式节点递归计算类型
+   - 字面量：`number_literal` → `u8`，`char_literal` → `u8`，`string_literal` → `ptr`
+   - 标识符：通过 `resolveSymbol` + `symToTypeInfo` 获取
+   - 指针表达式：`&` → `ptr`，`*` → 解引用后类型（检查参数是否为 ptr）
+   - 下标表达式：检查操作数是否为 `array` 或 `ptr`，返回 `u8`
+   - 二元表达式：算术运算含指针时只允许 `+`/`-`，不允许两指针相加；位运算不允许指针操作数
+   - 一元表达式：`-`/`~` 不允许指针操作数；`&` → `ptr`；`*` → 解引用后类型
+   - 函数调用：通过 `fns` 表查询返回类型
+   - 类型转换、更新表达式、条件表达式、逗号表达式等
+
+3. **实现 `typeOfLvalue()` 方法**：为左值表达式计算类型
+   - 处理 `pointer_declarator`、`identifier`、`subscript_expression`、`pointer_expression`（`*`）、`unary_expression`（`*`）
+
+4. **实现 `checkAssignmentCompat()` 方法**：类型兼容性验证
+   - 赋值：不允许指针赋值给非指针、非指针/数组赋值给指针
+   - 复合赋值：指针只允许 `+=` 和 `-=`，且右操作数不能是指针
+   - 数组名可隐式转换为指针
+
+5. **实现 `checkAllTypes()` Pass**：独立遍历 AST 做类型检查
+   - `checkTypesInNode` → `checkTypesInStatement` → `checkTypesInExpression` 递归遍历
+   - 覆盖所有语句类型：`compound_statement`、`expression_statement`、`declaration`、`if_statement`、`while_statement`、`do_statement`、`for_statement`、`switch_statement`、`return_statement`
+   - 覆盖所有表达式类型：`assignment_expression`、`binary_expression`、`unary_expression`、`pointer_expression`、`update_expression`、`call_expression`、`conditional_expression`、`comma_expression`、`cast_expression`、`subscript_expression`
+
+6. **集成到编译流程**：在 `analyzeAll` + `checkRecursion` 之后、`generateCode` 之前调用 `checkAllTypes`
+
+7. **移除旧补丁检查**：删除 `emitAssignment`、`emitLoadAccumulator`、`emitPointerCompoundAssign`、`emitPointerCompoundAssignUnary` 中的 ad-hoc 类型检查代码
+
+8. **修复 `isPointerDeclarator` bug**：原 `findNodeByType(declaratorNode, 'pointer_declarator')` 会搜索整个子树（包括函数参数中的指针声明符），导致非指针返回类型被误判为指针。新增 `isPointerDeclarator` 方法只沿声明符链查找，遇到 `function_declarator` 即停止
+
+**VM验证**: ✅ 所有 552 个测试用例通过，包括：
+- Bug 78 测试：`p * 5`、`p / 5`、`p % 5`、`p & 5`、`-p`、`p += p` 均报错
+- Bug 79 测试：`5[3]` 对字面量下标报错；`arr[0]`、`p[0]` 合法操作正常工作
+- 所有原有指针操作测试无回归
+
+**测试覆盖**: 552 个测试用例（cc-test.js），552/552 全部通过
+
+---
+
+## 第6轮：数组赋值与返回类型检查
+
+### Bug 81: 数组赋值和返回类型检查缺失
+
+**位置**: `checkAssignmentCompat` 和 `checkTypesInStatement`
+
+**问题**: 类型检查 Pass 中缺少对以下场景的检查：
+1. 对数组名赋值（如 `arr = 5`）没有在类型检查阶段报错，而是到代码生成阶段才报 "Cannot resolve operand"
+2. 将数组赋值给非指针类型（如 `b = arr`）没有报错
+3. 从非指针函数返回指针值（如 `unsigned char foo() { return &a; }`）没有报错
+4. 从函数返回数组（如 `return arr`）没有报错
+
+**影响**: 非法操作静默通过类型检查，到代码生成阶段才报不相关的错误
+
+**修复**:
+1. 在 `checkAssignmentCompat` 开头添加数组类型检查：`if (leftType.kind === 'array') throw Error`
+2. 在 `checkAssignmentCompat` 的 `op === '='` 分支添加数组到非指针类型赋值检查
+3. 在 `checkTypesInStatement` 的 `return_statement` 处理中添加返回类型验证：
+   - void 函数不能返回值
+   - 非指针函数不能返回指针
+   - 任何函数不能返回数组
+
+**VM验证**: ✅ 所有 556 个测试用例通过，包括：
+- Bug 81 测试：`arr = 5`、`b = arr`、`return &a`、`return arr` 均报错
+- `p = arr` 数组到指针赋值正常工作
+- 所有原有测试无回归
+
+**测试覆盖**: 556 个测试用例（cc-test.js），556/556 全部通过

@@ -25,14 +25,19 @@ const ISR_SAVE_SIZE = 4;
 
 type Type = 'void' | 'u8' | 'i8' | 'bool';
 
+interface TypeInfo {
+    type: Type;
+    isArray: boolean;
+    arraySize: number;
+    isPointer: boolean;
+}
+
 export interface Sym {
     name: string;
     asmName: string;
-    type: Type;
+    typeInfo: TypeInfo;
     ramAddr: number;
     bank: number;
-    isArray: boolean;
-    arraySize: number;
     isParam: boolean;
     paramIndex: number;
     frameOffset: number;
@@ -62,7 +67,7 @@ interface Fn {
     name: string;
     asmName: string;
     returnType: Type;
-    params: { name: string; asmName: string; type: Type }[];
+    params: { name: string; asmName: string; type: Type; isPointer: boolean }[];
     localSymbols: Map<string, Sym>;
     labelCounter: number;
     breakLabel?: string;
@@ -71,9 +76,22 @@ interface Fn {
     tempCount: number;
     savedTempCount: number;
     calls: Set<string>;
-    hasEarlyReturn: boolean;
+    allPathsReturn: boolean;
     frameSize: number;
     frameBase: number;
+    returnIsPointer: boolean;
+}
+
+interface BasicBlock {
+    id: number;
+    successors: BasicBlock[];
+    terminator: 'none' | 'return' | 'break' | 'continue' | 'branch' | 'infinite';
+}
+
+interface FnCFG {
+    entry: BasicBlock;
+    exit: BasicBlock;
+    blocks: BasicBlock[];
 }
 
 type TokenType =
@@ -99,7 +117,7 @@ interface ObjectMacro {
     body: Token[];
 }
 
-interface FunctionMacro {
+interface FnMacro {
     kind: 'function';
     name: string;
     params: string[];
@@ -107,7 +125,7 @@ interface FunctionMacro {
     body: Token[];
 }
 
-type Macro = ObjectMacro | FunctionMacro;
+type Macro = ObjectMacro | FnMacro;
 
 interface CondFrame {
     active: boolean;
@@ -270,14 +288,14 @@ class Preprocessor {
         }
 
         if (leadingWs === 0 && rest[0].type === 'punctuation' && rest[0].value === '(') {
-            this.parseFunctionMacro(name, rest, 0, lineNo);
+            this.parseFnMacro(name, rest, 0);
         } else {
             const body = rest.slice(leadingWs);
             this.macros.set(name, { kind: 'object', name, body });
         }
     }
 
-    private parseFunctionMacro(name: string, tokens: Token[], openParenIdx: number, lineNo: number): void {
+    private parseFnMacro(name: string, tokens: Token[], openParenIdx: number): void {
         const params: string[] = [];
         let isVariadic = false;
         let i = openParenIdx + 1;
@@ -448,7 +466,7 @@ class Preprocessor {
                     if (macro.kind === 'function') {
                         const { args, nextIdx } = this.collectArgs(tokens, i + 1, macro);
                         if (args !== null) {
-                            const substituted = this.substituteFunctionMacro(macro, args, expanding, token.value);
+                            const substituted = this.substituteFnMacro(macro, args);
                             const reExpanded = this.expandTokens(substituted, newExpanding);
                             const painted = reExpanded.map(t => {
                                 if (t.type === 'identifier' && t.value === token.value) {
@@ -473,7 +491,7 @@ class Preprocessor {
         return result;
     }
 
-    private collectArgs(tokens: Token[], startIdx: number, macro: FunctionMacro): { args: Token[][] | null; nextIdx: number } {
+    private collectArgs(tokens: Token[], startIdx: number, macro: FnMacro): { args: Token[][] | null; nextIdx: number } {
         let i = startIdx;
         while (i < tokens.length && tokens[i].type === 'whitespace') i++;
         if (i >= tokens.length || tokens[i].value !== '(') {
@@ -511,7 +529,7 @@ class Preprocessor {
         return { args: null, nextIdx: startIdx };
     }
 
-    private substituteFunctionMacro(macro: FunctionMacro, args: Token[][], expanding: Set<string>, macroName: string): Token[] {
+    private substituteFnMacro(macro: FnMacro, args: Token[][]): Token[] {
         const expandedArgs = args.map(arg => this.expandTokens(arg, new Set()));
         const result: Token[] = [];
         const body = this.trimPasteWhitespace(macro.body);
@@ -686,14 +704,14 @@ class Preprocessor {
             }
 
             if (ch === '"') {
-                const { value, endIdx } = this.scanString(text, i, lineNo);
+                const { value, endIdx } = this.scanString(text, i);
                 tokens.push({ type: 'string', value, lineNo });
                 i = endIdx;
                 continue;
             }
 
             if (ch === "'") {
-                const { value, endIdx } = this.scanChar(text, i, lineNo);
+                const { value, endIdx } = this.scanChar(text, i);
                 tokens.push({ type: 'char', value, lineNo });
                 i = endIdx;
                 continue;
@@ -748,7 +766,7 @@ class Preprocessor {
         return tokens;
     }
 
-    private scanString(text: string, start: number, lineNo: number): { value: string; endIdx: number } {
+    private scanString(text: string, start: number): { value: string; endIdx: number } {
         let i = start + 1;
         while (i < text.length) {
             if (text[i] === '\\') { i += 2; continue; }
@@ -758,7 +776,7 @@ class Preprocessor {
         return { value: text.slice(start, i), endIdx: i };
     }
 
-    private scanChar(text: string, start: number, lineNo: number): { value: string; endIdx: number } {
+    private scanChar(text: string, start: number): { value: string; endIdx: number } {
         let i = start + 1;
         while (i < text.length) {
             if (text[i] === '\\') { i += 2; continue; }
@@ -811,27 +829,12 @@ class SC8P053Compiler {
         this.tempCounter = 0;
         this.currentSourceLine = 0;
 
-        this.collectDeclarations(tree.rootNode);
-        this.buildCallGraph(tree.rootNode);
+        this.analyzeAll(tree.rootNode);
         this.checkRecursion();
+        this.checkAllTypes(tree.rootNode);
         const afterGlobalsAddr = this.nextRamAddr;
         const afterGlobalsBank = this.currentBank;
-        this.dryRun = true;
-        this.generateCode(tree.rootNode);
-        this.dryRun = false;
-        for (const [, finfo] of this.fns) {
-            finfo.savedTempCount = finfo.tempCount;
-            finfo.frameSize += finfo.tempCount;
-        }
-        for (const [, finfo] of this.fns) {
-            finfo.frameBase = -1;
-        }
-        this.nextRamAddr = afterGlobalsAddr;
-        this.currentBank = afterGlobalsBank;
-        this.allocateCompiledStack();
-        this.generateCode(tree.rootNode);
-        this.resolveTempAddresses();
-        this.emitOutput();
+        this.generateCode(tree.rootNode, afterGlobalsAddr, afterGlobalsBank);
 
         const asmLineToSourceLine = new Map<number, number>();
         const fnStartMarkerLines = new Map<string, number>();
@@ -929,31 +932,38 @@ class SC8P053Compiler {
         return { rom, asm: asmSource, debugInfo };
     }
 
-    private buildCallGraph(rootNode: Parser.SyntaxNode) {
-        for (let i = 0; i < rootNode.childCount; i++) {
-            const child = rootNode.child(i);
-            if (!child || child.type !== 'function_definition') continue;
-            const declaratorNode = child.childForFieldName('declarator');
-            if (!declaratorNode) continue;
-            const funcDeclarator = this.findNodeByType(declaratorNode, 'function_declarator');
-            if (!funcDeclarator) continue;
-            const nameNode = funcDeclarator.childForFieldName('declarator');
-            const funcName = nameNode ? nameNode.text.trim() : '';
-            const funcInfo = this.fns.get(funcName);
-            if (!funcInfo) continue;
-            const bodyNode = child.childForFieldName('body');
-            if (bodyNode) this.scanForCalls(bodyNode, funcInfo);
+    private analyzeFnBody(funcName: string, node: Parser.SyntaxNode, fn: Fn, loopDepth: number, switchDepth: number) {
+        if (node.type === 'ERROR') {
+            const line = node.startPosition.row + 1;
+            const col = node.startPosition.column + 1;
+            throw new Error(`Syntax error at line ${line}, column ${col}`);
         }
-    }
-
-    private scanForCalls(node: Parser.SyntaxNode, funcInfo: Fn) {
+        if (node.isMissing) {
+            throw new Error(`Syntax error: unexpected end of input`);
+        }
+        if (node.type === 'while_statement' || node.type === 'do_statement' || node.type === 'for_statement') {
+            loopDepth++;
+        }
+        if (node.type === 'switch_statement') {
+            switchDepth++;
+        }
+        if (node.type === 'break_statement') {
+            if (loopDepth === 0 && switchDepth === 0) {
+                throw new Error(`'break' statement not within loop or switch in function '${funcName}'`);
+            }
+        }
+        if (node.type === 'continue_statement') {
+            if (loopDepth === 0) {
+                throw new Error(`'continue' statement not within loop in function '${funcName}'`);
+            }
+        }
         if (node.type === 'call_expression') {
             const funcNode = node.childForFieldName('function');
-            if (funcNode) funcInfo.calls.add(funcNode.text.trim());
+            if (funcNode) fn.calls.add(funcNode.text.trim());
         }
         for (let i = 0; i < node.childCount; i++) {
             const child = node.child(i);
-            if (child) this.scanForCalls(child, funcInfo);
+            if (child) this.analyzeFnBody(funcName, child, fn, loopDepth, switchDepth);
         }
     }
 
@@ -986,6 +996,524 @@ class SC8P053Compiler {
                 throw new Error(`Recursive function call detected: ${path}. Recursion is not supported on this target (static RAM allocation).`);
             }
         }
+    }
+
+    private analyzeAll(rootNode: Parser.SyntaxNode) {
+        if (rootNode.type === 'ERROR') {
+            const line = rootNode.startPosition.row + 1;
+            const col = rootNode.startPosition.column + 1;
+            throw new Error(`Syntax error at line ${line}, column ${col}`);
+        }
+        if (rootNode.isMissing) {
+            throw new Error(`Syntax error: unexpected end of input`);
+        }
+        for (let i = 0; i < rootNode.childCount; i++) {
+            const child = rootNode.child(i);
+            if (!child) continue;
+            if (child.type === 'ERROR') {
+                const line = child.startPosition.row + 1;
+                const col = child.startPosition.column + 1;
+                throw new Error(`Syntax error at line ${line}, column ${col}`);
+            }
+            if (child.isMissing) {
+                throw new Error(`Syntax error: unexpected end of input`);
+            }
+            if (child.type === 'declaration') {
+                this.processGlobalDeclaration(child);
+            } else if (child.type === 'function_definition') {
+                this.processFnSignature(child);
+            } else if (child.type === 'type_definition') {
+                throw new Error(`'typedef' is not supported on this target`);
+            } else if (child.type === 'struct_specifier') {
+                throw new Error(`'struct' is not supported on this target`);
+            } else if (child.type === 'enum_specifier') {
+                throw new Error(`'enum' is not supported on this target`);
+            } else if (child.type === 'union_specifier') {
+                throw new Error(`'union' is not supported on this target`);
+            } else {
+                // 未识别的顶层节点 = 语义错误
+                const line = child.startPosition.row + 1;
+                const col = child.startPosition.column + 1;
+                throw new Error(
+                    `Unexpected top-level construct '${child.type}' at line ${line}, column ${col}. ` +
+                    `A translation unit can only contain function definitions, declarations, and preprocessor directives.`
+                );
+            }
+        }
+        for (let i = 0; i < rootNode.childCount; i++) {
+            const child = rootNode.child(i);
+            if (!child || child.type !== 'function_definition') continue;
+            const declaratorNode = child.childForFieldName('declarator');
+            if (!declaratorNode) continue;
+            const funcDeclarator = this.findNodeByType(declaratorNode, 'function_declarator');
+            if (!funcDeclarator) continue;
+            const nameNode = funcDeclarator.childForFieldName('declarator');
+            const funcName = nameNode ? nameNode.text.trim() : '';
+            const fn = this.fns.get(funcName);
+            if (!fn) continue;
+            const bodyNode = child.childForFieldName('body');
+            if (!bodyNode) continue;
+            this.analyzeFnBody(funcName, bodyNode, fn, 0, 0);
+            const cfg = this.buildCFG(bodyNode);
+            fn.allPathsReturn = this.cfgAllPathsReturn(cfg);
+            if (!fn.allPathsReturn && fn.returnType !== 'void' && funcName !== 'main' && !fn.isISR) {
+                throw new Error(`Non-void function '${funcName}' must return a value on all code paths`);
+            }
+        }
+    }
+
+    private newBlock(blocks: BasicBlock[]): BasicBlock {
+        const block: BasicBlock = { id: blocks.length, successors: [], terminator: 'none' };
+        blocks.push(block);
+        return block;
+    }
+
+    private buildCFG(bodyNode: Parser.SyntaxNode): FnCFG {
+        const blocks: BasicBlock[] = [];
+        const entry = this.newBlock(blocks);
+        const exit = this.newBlock(blocks);
+        const result = this.buildCFGCompound(bodyNode, entry, exit, blocks);
+        if (result.fallThrough && result.currentBlock) {
+            result.currentBlock.successors.push(exit);
+        }
+        return { entry, exit, blocks };
+    }
+
+    private buildCFGCompound(node: Parser.SyntaxNode, entry: BasicBlock, exit: BasicBlock, blocks: BasicBlock[], loopHeader?: BasicBlock): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+        const stmts: Parser.SyntaxNode[] = [];
+        for (let i = 0; i < node.childCount; i++) {
+            const child = node.child(i);
+            if (!child || child.type === '{' || child.type === '}') continue;
+            stmts.push(child);
+        }
+        let currentBlock: BasicBlock | null = entry;
+        let fallThrough = true;
+        for (const stmt of stmts) {
+            if (!fallThrough || !currentBlock) break;
+            const result = this.buildCFGStmt(stmt, currentBlock, exit, blocks, loopHeader);
+            currentBlock = result.currentBlock;
+            fallThrough = result.fallThrough;
+        }
+        return { currentBlock, fallThrough };
+    }
+
+    private buildCFGStmt(stmt: Parser.SyntaxNode, currentBlock: BasicBlock, exit: BasicBlock, blocks: BasicBlock[], loopHeader?: BasicBlock): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+        if (stmt.type === 'return_statement') {
+            currentBlock.terminator = 'return';
+            return { currentBlock, fallThrough: false };
+        }
+
+        if (stmt.type === 'break_statement') {
+            currentBlock.terminator = 'break';
+            currentBlock.successors.push(exit);
+            return { currentBlock, fallThrough: false };
+        }
+
+        if (stmt.type === 'continue_statement') {
+            currentBlock.terminator = 'continue';
+            if (loopHeader) {
+                currentBlock.successors.push(loopHeader);
+            }
+            return { currentBlock, fallThrough: false };
+        }
+
+        if (stmt.type === 'compound_statement') {
+            return this.buildCFGCompound(stmt, currentBlock, exit, blocks, loopHeader);
+        }
+
+        if (stmt.type === 'if_statement') {
+            return this.buildCFGIf(stmt, currentBlock, exit, blocks, loopHeader);
+        }
+
+        if (stmt.type === 'while_statement') {
+            return this.buildCFGWhile(stmt, currentBlock, blocks);
+        }
+
+        if (stmt.type === 'for_statement') {
+            return this.buildCFGFor(stmt, currentBlock, blocks);
+        }
+
+        if (stmt.type === 'do_statement') {
+            return this.buildCFGDoWhile(stmt, currentBlock, blocks);
+        }
+
+        if (stmt.type === 'switch_statement') {
+            return this.buildCFGSwitch(stmt, currentBlock, blocks);
+        }
+
+        return { currentBlock, fallThrough: true };
+    }
+
+    private buildCFGIf(stmt: Parser.SyntaxNode, currentBlock: BasicBlock, exit: BasicBlock, blocks: BasicBlock[], loopHeader?: BasicBlock): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+        const consequence = stmt.childForFieldName('consequence');
+        const alternative = stmt.childForFieldName('alternative');
+
+        const thenBlock = this.newBlock(blocks);
+        const mergeBlock = this.newBlock(blocks);
+
+        currentBlock.successors.push(thenBlock);
+
+        let thenFallsThrough = false;
+        let elseFallsThrough = false;
+
+        if (alternative) {
+            const elseBlock = this.newBlock(blocks);
+            currentBlock.successors.push(elseBlock);
+            if (consequence) {
+                const thenResult = this.buildCFGStmt(consequence, thenBlock, exit, blocks, loopHeader);
+                thenFallsThrough = thenResult.fallThrough;
+                if (thenResult.fallThrough && thenResult.currentBlock) {
+                    thenResult.currentBlock.successors.push(mergeBlock);
+                }
+            } else {
+                thenBlock.successors.push(mergeBlock);
+                thenFallsThrough = true;
+            }
+            const elseBody = alternative.type === 'else_clause' ? this.extractElseBody(alternative) : alternative;
+            if (elseBody) {
+                const elseResult = this.buildCFGStmt(elseBody, elseBlock, exit, blocks, loopHeader);
+                elseFallsThrough = elseResult.fallThrough;
+                if (elseResult.fallThrough && elseResult.currentBlock) {
+                    elseResult.currentBlock.successors.push(mergeBlock);
+                }
+            } else {
+                elseBlock.successors.push(mergeBlock);
+                elseFallsThrough = true;
+            }
+        } else {
+            currentBlock.successors.push(mergeBlock);
+            elseFallsThrough = true;
+            if (consequence) {
+                const thenResult = this.buildCFGStmt(consequence, thenBlock, exit, blocks, loopHeader);
+                thenFallsThrough = thenResult.fallThrough;
+                if (thenResult.fallThrough && thenResult.currentBlock) {
+                    thenResult.currentBlock.successors.push(mergeBlock);
+                }
+            } else {
+                thenBlock.successors.push(mergeBlock);
+                thenFallsThrough = true;
+            }
+        }
+
+        if (!thenFallsThrough && !elseFallsThrough) {
+            return { currentBlock: null, fallThrough: false };
+        }
+        return { currentBlock: mergeBlock, fallThrough: true };
+    }
+
+    private buildCFGWhile(stmt: Parser.SyntaxNode, currentBlock: BasicBlock, blocks: BasicBlock[]): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+        const body = stmt.childForFieldName('body');
+        const condition = stmt.childForFieldName('condition');
+
+        if (this.isInfiniteLoopCondition(condition)) {
+            const loopBlock = this.newBlock(blocks);
+            const loopExit = this.newBlock(blocks);
+            currentBlock.successors.push(loopBlock);
+            if (body) {
+                const bodyResult = this.buildCFGStmt(body, loopBlock, loopExit, blocks, loopBlock);
+                if (bodyResult.fallThrough && bodyResult.currentBlock) {
+                    bodyResult.currentBlock.successors.push(loopBlock);
+                }
+            } else {
+                loopBlock.successors.push(loopBlock);
+            }
+            const canBreak = this.cfgCanBreakToExit(loopBlock, loopExit, new Set());
+            if (canBreak) {
+                return { currentBlock: loopExit, fallThrough: true };
+            }
+            if (loopBlock.terminator === 'none') loopBlock.terminator = 'infinite';
+            return { currentBlock: null, fallThrough: false };
+        }
+
+        const loopBlock = this.newBlock(blocks);
+        const loopExit = this.newBlock(blocks);
+        currentBlock.successors.push(loopBlock);
+        loopBlock.successors.push(loopExit);
+        if (body) {
+            const bodyResult = this.buildCFGStmt(body, loopBlock, loopExit, blocks, loopBlock);
+            if (bodyResult.fallThrough && bodyResult.currentBlock) {
+                bodyResult.currentBlock.successors.push(loopBlock);
+            }
+        }
+        return { currentBlock: loopExit, fallThrough: true };
+    }
+
+    private buildCFGFor(stmt: Parser.SyntaxNode, currentBlock: BasicBlock, blocks: BasicBlock[]): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+        const body = stmt.childForFieldName('body');
+        const condition = stmt.childForFieldName('condition');
+
+        if (!condition) {
+            const loopBlock = this.newBlock(blocks);
+            const loopExit = this.newBlock(blocks);
+            currentBlock.successors.push(loopBlock);
+            if (body) {
+                const bodyResult = this.buildCFGStmt(body, loopBlock, loopExit, blocks, loopBlock);
+                if (bodyResult.fallThrough && bodyResult.currentBlock) {
+                    bodyResult.currentBlock.successors.push(loopBlock);
+                }
+            } else {
+                loopBlock.successors.push(loopBlock);
+            }
+            const canBreak = this.cfgCanBreakToExit(loopBlock, loopExit, new Set());
+            if (canBreak) {
+                return { currentBlock: loopExit, fallThrough: true };
+            }
+            if (loopBlock.terminator === 'none') loopBlock.terminator = 'infinite';
+            return { currentBlock: null, fallThrough: false };
+        }
+
+        const loopBlock = this.newBlock(blocks);
+        const loopExit = this.newBlock(blocks);
+        currentBlock.successors.push(loopBlock);
+        loopBlock.successors.push(loopExit);
+        if (body) {
+            const bodyResult = this.buildCFGStmt(body, loopBlock, loopExit, blocks, loopBlock);
+            if (bodyResult.fallThrough && bodyResult.currentBlock) {
+                bodyResult.currentBlock.successors.push(loopBlock);
+            }
+        }
+        return { currentBlock: loopExit, fallThrough: true };
+    }
+
+    private buildCFGDoWhile(stmt: Parser.SyntaxNode, currentBlock: BasicBlock, blocks: BasicBlock[]): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+        const body = stmt.childForFieldName('body');
+        const condition = stmt.childForFieldName('condition');
+
+        if (this.isInfiniteLoopCondition(condition)) {
+            const loopBlock = this.newBlock(blocks);
+            const loopExit = this.newBlock(blocks);
+            currentBlock.successors.push(loopBlock);
+            if (body) {
+                const bodyResult = this.buildCFGStmt(body, loopBlock, loopExit, blocks, loopBlock);
+                if (bodyResult.fallThrough && bodyResult.currentBlock) {
+                    bodyResult.currentBlock.successors.push(loopBlock);
+                }
+            }
+            const canBreak = this.cfgCanBreakToExit(loopBlock, loopExit, new Set());
+            if (canBreak) {
+                return { currentBlock: loopExit, fallThrough: true };
+            }
+            if (loopBlock.terminator === 'none') loopBlock.terminator = 'infinite';
+            return { currentBlock: null, fallThrough: false };
+        }
+
+        const loopBlock = this.newBlock(blocks);
+        const loopExit = this.newBlock(blocks);
+        currentBlock.successors.push(loopBlock);
+        if (body) {
+            const bodyResult = this.buildCFGStmt(body, loopBlock, loopExit, blocks, loopBlock);
+            if (bodyResult.fallThrough && bodyResult.currentBlock) {
+                bodyResult.currentBlock.successors.push(loopBlock);
+                bodyResult.currentBlock.successors.push(loopExit);
+            }
+        }
+        return { currentBlock: loopExit, fallThrough: true };
+    }
+
+    private buildCFGSwitch(stmt: Parser.SyntaxNode, currentBlock: BasicBlock, blocks: BasicBlock[], loopHeader?: BasicBlock): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+        const body = stmt.childForFieldName('body');
+        if (!body) return { currentBlock, fallThrough: true };
+
+        const switchExit = this.newBlock(blocks);
+        const caseStatements: Parser.SyntaxNode[] = [];
+        for (let i = 0; i < body.childCount; i++) {
+            const child = body.child(i);
+            if (child && child.type === 'case_statement') caseStatements.push(child);
+        }
+
+        let hasDefault = false;
+        const caseBlocks: BasicBlock[] = [];
+        for (const caseNode of caseStatements) {
+            const caseBlock = this.newBlock(blocks);
+            caseBlocks.push(caseBlock);
+            currentBlock.successors.push(caseBlock);
+            const firstChild = caseNode.child(0);
+            if (firstChild && firstChild.type === 'default') hasDefault = true;
+        }
+
+        if (!hasDefault) {
+            currentBlock.successors.push(switchExit);
+        }
+
+        for (let i = 0; i < caseStatements.length; i++) {
+            const caseNode = caseStatements[i];
+            const caseBlock = caseBlocks[i];
+            const caseStmts: Parser.SyntaxNode[] = [];
+            for (let j = 0; j < caseNode.childCount; j++) {
+                const child = caseNode.child(j);
+                if (!child) continue;
+                if (child.type === 'case' || child.type === 'default' || child.type === ':') continue;
+                if (child.type === 'integer_literal' || child.type === 'number_literal' || child.type === 'identifier') continue;
+                caseStmts.push(child);
+            }
+            if (caseStmts.length === 0) {
+                if (i + 1 < caseBlocks.length) {
+                    caseBlock.successors.push(caseBlocks[i + 1]);
+                } else {
+                    caseBlock.successors.push(switchExit);
+                }
+                continue;
+            }
+            let cur: BasicBlock | null = caseBlock;
+            let ft = true;
+            for (const s of caseStmts) {
+                if (!ft || !cur) break;
+                const r = this.buildCFGStmt(s, cur, switchExit, blocks, loopHeader);
+                cur = r.currentBlock;
+                ft = r.fallThrough;
+            }
+            if (ft && cur) {
+                cur.successors.push(switchExit);
+            }
+        }
+
+        return { currentBlock: switchExit, fallThrough: true };
+    }
+
+    private cfgCanBreakToExit(block: BasicBlock, exit: BasicBlock, visited: Set<number>): boolean {
+        if (visited.has(block.id)) return false;
+        visited.add(block.id);
+        for (const succ of block.successors) {
+            if (succ === exit) return true;
+            if (this.cfgCanBreakToExit(succ, exit, visited)) return true;
+        }
+        return false;
+    }
+
+    private cfgAllPathsReturn(cfg: FnCFG): boolean {
+        const blockStatus = new Map<number, 'returns' | 'not_returns' | 'unknown'>();
+
+        for (const block of cfg.blocks) {
+            blockStatus.set(block.id, 'unknown');
+        }
+
+        blockStatus.set(cfg.exit.id, 'not_returns');
+
+        for (const block of cfg.blocks) {
+            if (block.terminator === 'return') {
+                blockStatus.set(block.id, 'returns');
+            }
+        }
+
+        let changed = true;
+        while (changed) {
+            changed = false;
+            for (const block of cfg.blocks) {
+                const status = blockStatus.get(block.id);
+                if (status !== 'unknown') continue;
+
+                if (block.successors.length === 0) {
+                    blockStatus.set(block.id, 'not_returns');
+                    changed = true;
+                    continue;
+                }
+
+                const allReturn = block.successors.every(s => blockStatus.get(s.id) === 'returns');
+                if (allReturn) {
+                    blockStatus.set(block.id, 'returns');
+                    changed = true;
+                    continue;
+                }
+
+                const anyNotReturn = block.successors.some(s => blockStatus.get(s.id) === 'not_returns');
+                if (anyNotReturn) {
+                    blockStatus.set(block.id, 'not_returns');
+                    changed = true;
+                    continue;
+                }
+            }
+        }
+
+        const loopBlocks = new Set<number>();
+        for (const block of cfg.blocks) {
+            if (blockStatus.get(block.id) === 'unknown') {
+                loopBlocks.add(block.id);
+            }
+        }
+
+        const loopExitsReturn = (blockId: number, visited: Set<number>): boolean => {
+            if (visited.has(blockId)) return true;
+            visited.add(blockId);
+            const block = cfg.blocks.find(b => b.id === blockId);
+            if (!block) return true;
+            const st = blockStatus.get(blockId);
+            if (st === 'returns') return true;
+            if (st === 'not_returns') return false;
+            for (const succ of block.successors) {
+                if (loopBlocks.has(succ.id)) continue;
+                if (!loopExitsReturn(succ.id, visited)) return false;
+            }
+            return true;
+        };
+
+        for (const blockId of loopBlocks) {
+            const block = cfg.blocks.find(b => b.id === blockId)!;
+            const hasNonLoopSucc = block.successors.some(s => !loopBlocks.has(s.id));
+            if (hasNonLoopSucc) {
+                const allExitsReturn = block.successors
+                    .filter(s => !loopBlocks.has(s.id))
+                    .every(s => loopExitsReturn(s.id, new Set()));
+                if (allExitsReturn) {
+                    blockStatus.set(blockId, 'returns');
+                } else {
+                    blockStatus.set(blockId, 'not_returns');
+                }
+            } else {
+                const canReachReturn = (bid: number, v: Set<number>): boolean => {
+                    if (v.has(bid)) return false;
+                    v.add(bid);
+                    const b = cfg.blocks.find(bb => bb.id === bid);
+                    if (!b) return false;
+                    if (b.terminator === 'return') return true;
+                    for (const s of b.successors) {
+                        if (canReachReturn(s.id, v)) return true;
+                    }
+                    return false;
+                };
+                if (canReachReturn(blockId, new Set())) {
+                    blockStatus.set(blockId, 'returns');
+                } else {
+                    blockStatus.set(blockId, 'not_returns');
+                }
+            }
+        }
+
+        let changed2 = true;
+        while (changed2) {
+            changed2 = false;
+            for (const block of cfg.blocks) {
+                const status = blockStatus.get(block.id);
+                if (status !== 'unknown') continue;
+
+                const allReturn = block.successors.every(s => blockStatus.get(s.id) === 'returns');
+                if (allReturn) {
+                    blockStatus.set(block.id, 'returns');
+                    changed2 = true;
+                    continue;
+                }
+
+                const anyNotReturn = block.successors.some(s => blockStatus.get(s.id) === 'not_returns');
+                if (anyNotReturn) {
+                    blockStatus.set(block.id, 'not_returns');
+                    changed2 = true;
+                    continue;
+                }
+            }
+        }
+
+        for (const block of cfg.blocks) {
+            if (blockStatus.get(block.id) === 'unknown') {
+                blockStatus.set(block.id, 'not_returns');
+            }
+        }
+
+        return blockStatus.get(cfg.entry.id) === 'returns';
+    }
+
+    private isInfiniteLoopCondition(condition: Parser.SyntaxNode | null): boolean {
+        if (!condition) return false;
+        const text = condition.text.trim();
+        return text === '1' || text === 'true' || text === '(1)' || text === '(true)';
     }
 
     private allocateCompiledStack() {
@@ -1142,26 +1670,26 @@ class SC8P053Compiler {
 
     private emitRamDefinitions() {
         for (const [, sym] of this.globalSymbols) {
-            if (sym.isArray) {
-                for (let i = 0; i < sym.arraySize; i++) {
+            if (sym.typeInfo.isArray) {
+                for (let i = 0; i < sym.typeInfo.arraySize; i++) {
                     this.asmLines.push(`${sym.asmName}_${i} EQU 0x${(sym.ramAddr + i).toString(16).toUpperCase().padStart(2, '0')}`);
                 }
             } else {
                 this.asmLines.push(`${sym.asmName} EQU 0x${sym.ramAddr.toString(16).toUpperCase().padStart(2, '0')}`);
             }
         }
-        for (const [, funcInfo] of this.fns) {
-            for (const [, sym] of funcInfo.localSymbols) {
-                if (!sym.isArray) {
+        for (const [, fn] of this.fns) {
+            for (const [, sym] of fn.localSymbols) {
+                if (!sym.typeInfo.isArray) {
                     this.asmLines.push(`${sym.asmName} EQU 0x${sym.ramAddr.toString(16).toUpperCase().padStart(2, '0')}`);
                 } else {
-                    for (let i = 0; i < sym.arraySize; i++) {
+                    for (let i = 0; i < sym.typeInfo.arraySize; i++) {
                         this.asmLines.push(`${sym.asmName}_${i} EQU 0x${(sym.ramAddr + i).toString(16).toUpperCase().padStart(2, '0')}`);
                     }
                 }
             }
-            for (let i = 0; i < funcInfo.tempCount; i++) {
-                const asmName = `${funcInfo.asmName}_T${i}`;
+            for (let i = 0; i < fn.tempCount; i++) {
+                const asmName = `${fn.asmName}_T${i}`;
                 this.asmLines.push(`${asmName} EQU ADDR_${asmName}`);
             }
         }
@@ -1231,7 +1759,7 @@ class SC8P053Compiler {
     }
 
     private emitLdArrayElemToA(sym: Sym, index: number) {
-        if (!sym.isArray) {
+        if (!sym.typeInfo.isArray) {
             this.emitLdSymToA(sym);
             if (index === 0) {
                 this.emitIndirectRead();
@@ -1248,7 +1776,7 @@ class SC8P053Compiler {
     }
 
     private emitLdAToArrayElem(sym: Sym, index: number) {
-        if (!sym.isArray) {
+        if (!sym.typeInfo.isArray) {
             const t = this.allocTemp();
             this.emitLdAToTemp(t);
             this.emitLdSymToA(sym);
@@ -1304,20 +1832,11 @@ class SC8P053Compiler {
         this.asmLines.push('LD FSR,A');
     }
 
-    private collectDeclarations(node: Parser.SyntaxNode) {
-        for (let i = 0; i < node.childCount; i++) {
-            const child = node.child(i);
-            if (!child) continue;
-            if (child.type === 'declaration') this.processGlobalDeclaration(child);
-            else if (child.type === 'function_definition') this.processFnSignature(child);
-        }
-    }
-
     private processGlobalDeclaration(node: Parser.SyntaxNode) {
         const typeNode = node.childForFieldName('type');
         if (!typeNode) return;
 
-        const ctype = this.resolveType(typeNode);
+        const type = this.resolveType(typeNode);
         const declarators: Parser.SyntaxNode[] = [];
         for (let i = 0; i < node.childCount; i++) {
             const child = node.child(i);
@@ -1327,7 +1846,7 @@ class SC8P053Compiler {
         }
 
         for (const declaratorNode of declarators) {
-            const { name, isArray, arraySize } = this.parseDeclarator(declaratorNode);
+            const { name, isArray, arraySize, isPointer } = this.parseDeclarator(declaratorNode);
             const size = isArray ? arraySize : 1;
 
             if (this.globalSymbols.has(name)) {
@@ -1338,8 +1857,13 @@ class SC8P053Compiler {
             const asmName = toAsmName(name);
 
             this.globalSymbols.set(name, {
-                name, asmName, type: ctype, ramAddr: addr, bank: this.getBankForAddr(addr),
-                isArray, arraySize, isParam: false, paramIndex: 0, frameOffset: -1, isStatic: false
+                name, asmName, typeInfo: {
+                    type,
+                    isArray,
+                    arraySize,
+                    isPointer
+                }, ramAddr: addr, bank: this.getBankForAddr(addr),
+                isParam: false, paramIndex: 0, frameOffset: -1, isStatic: false
             });
 
             const initDecl = this.findNodeByType(declaratorNode, 'init_declarator');
@@ -1387,6 +1911,8 @@ class SC8P053Compiler {
         const nameNode = funcDeclarator.childForFieldName('declarator');
         const funcName = nameNode ? nameNode.text.trim() : '';
 
+        const returnIsPointer = this.isPointerDeclarator(declaratorNode);
+
         let isISR = false;
         for (let i = 0; i < funcDeclarator.childCount; i++) {
             const child = funcDeclarator.child(i);
@@ -1400,7 +1926,7 @@ class SC8P053Compiler {
 
         const params = this.extractParams(funcDeclarator, funcName);
 
-        const funcInfo: Fn = {
+        const fn: Fn = {
             name: funcName,
             asmName: asmFuncName,
             returnType,
@@ -1411,34 +1937,39 @@ class SC8P053Compiler {
             tempCount: 0,
             savedTempCount: 0,
             calls: new Set(),
-            hasEarlyReturn: false,
+            allPathsReturn: false,
             frameSize: 0,
-            frameBase: -1
+            frameBase: -1,
+            returnIsPointer
         };
 
         let frameOffset = 0;
 
         let paramIdx = 0;
         for (const p of params) {
-            funcInfo.localSymbols.set(p.name, {
-                name: p.name, asmName: p.asmName, type: p.type,
+            fn.localSymbols.set(p.name, {
+                name: p.name, asmName: p.asmName, typeInfo: {
+                    type: p.type,
+                    isArray: false,
+                    arraySize: 0,
+                    isPointer: p.isPointer
+                },
                 ramAddr: -1, bank: -1,
-                isArray: false, arraySize: 0,
                 isParam: true, paramIndex: paramIdx++,
                 frameOffset: frameOffset++, isStatic: false
             });
         }
 
-        if (bodyNode) frameOffset = this.collectLocalDeclarations(bodyNode, funcInfo, frameOffset);
+        if (bodyNode) frameOffset = this.collectLocalDeclarations(bodyNode, fn, frameOffset);
 
-        funcInfo.frameSize = frameOffset;
+        fn.frameSize = frameOffset;
         if (this.fns.has(funcName)) {
             throw new Error(`Function '${funcName}' is already defined`);
         }
-        this.fns.set(funcName, funcInfo);
+        this.fns.set(funcName, fn);
     }
 
-    private collectLocalDeclarations(node: Parser.SyntaxNode, funcInfo: Fn, frameOffset: number): number {
+    private collectLocalDeclarations(node: Parser.SyntaxNode, fn: Fn, frameOffset: number): number {
         if (node.type === 'declaration') {
             const typeNode = node.childForFieldName('type');
             if (!typeNode) return frameOffset;
@@ -1452,7 +1983,7 @@ class SC8P053Compiler {
                 }
             }
 
-            const ctype = this.resolveType(typeNode);
+            const type = this.resolveType(typeNode);
             const declarators: Parser.SyntaxNode[] = [];
             for (let i = 0; i < node.childCount; i++) {
                 const child = node.child(i);
@@ -1463,20 +1994,24 @@ class SC8P053Compiler {
 
             let offset = frameOffset;
             for (const declaratorNode of declarators) {
-                const { name, isArray, arraySize } = this.parseDeclarator(declaratorNode);
+                const { name, isArray, arraySize, isPointer } = this.parseDeclarator(declaratorNode);
                 const size = isArray ? arraySize : 1;
-                const asmName = toAsmName(funcInfo.name + '_' + name);
+                const asmName = toAsmName(fn.name + '_' + name);
 
-                if (funcInfo.localSymbols.has(name)) {
-                    throw new Error(`Variable '${name}' redeclared in function '${funcInfo.name}' (shadowing not supported)`);
+                if (fn.localSymbols.has(name)) {
+                    throw new Error(`Variable '${name}' redeclared in function '${fn.name}' (shadowing not supported)`);
                 }
 
                 if (isStatic) {
                     const addr = this.allocRam(size);
-                    funcInfo.localSymbols.set(name, {
-                        name, asmName, type: ctype,
+                    fn.localSymbols.set(name, {
+                        name, asmName, typeInfo: {
+                            type,
+                            isArray,
+                            arraySize,
+                            isPointer
+                        },
                         ramAddr: addr, bank: this.getBankForAddr(addr),
-                        isArray, arraySize,
                         isParam: false, paramIndex: 0,
                         frameOffset: -1, isStatic: true
                     });
@@ -1493,10 +2028,14 @@ class SC8P053Compiler {
                         this.globalInits.push({ asmName, value: 0, isArray: false, ramAddr: addr });
                     }
                 } else {
-                    funcInfo.localSymbols.set(name, {
-                        name, asmName, type: ctype,
+                    fn.localSymbols.set(name, {
+                        name, asmName, typeInfo: {
+                            type,
+                            isArray,
+                            arraySize,
+                            isPointer
+                        },
                         ramAddr: -1, bank: -1,
-                        isArray, arraySize,
                         isParam: false, paramIndex: 0,
                         frameOffset: offset, isStatic: false
                     });
@@ -1509,13 +2048,13 @@ class SC8P053Compiler {
         let offset = frameOffset;
         for (let i = 0; i < node.childCount; i++) {
             const child = node.child(i);
-            if (child) offset = this.collectLocalDeclarations(child, funcInfo, offset);
+            if (child) offset = this.collectLocalDeclarations(child, fn, offset);
         }
         return offset;
     }
 
-    private extractParams(funcDeclarator: Parser.SyntaxNode, funcName: string): { name: string; asmName: string; type: Type }[] {
-        const params: { name: string; asmName: string; type: Type }[] = [];
+    private extractParams(funcDeclarator: Parser.SyntaxNode, funcName: string): { name: string; asmName: string; type: Type; isPointer: boolean }[] {
+        const params: { name: string; asmName: string; type: Type; isPointer: boolean }[] = [];
         const paramListNode = funcDeclarator.childForFieldName('parameters');
         if (!paramListNode) return params;
 
@@ -1525,8 +2064,8 @@ class SC8P053Compiler {
             const pType = child.childForFieldName('type');
             const pDeclarator = child.childForFieldName('declarator');
             if (!pType || !pDeclarator) continue;
-            const { name: pName } = this.parseDeclarator(pDeclarator);
-            params.push({ name: pName, asmName: toAsmName(funcName + '_' + pName), type: this.resolveType(pType) });
+            const { name: pName, isPointer: pIsPointer } = this.parseDeclarator(pDeclarator);
+            params.push({ name: pName, asmName: toAsmName(funcName + '_' + pName), type: this.resolveType(pType), isPointer: pIsPointer });
         }
         return params;
     }
@@ -1535,38 +2074,48 @@ class SC8P053Compiler {
         const text = node.text.trim();
         if (text === 'void') return 'void';
         if (text === 'bool') return 'bool';
-        if (text === 'int' ||
-            text === 'short' ||
-            text === 'char' ||
-            text === 'signed int' ||
-            text === 'signed short' ||
-            text === 'signed char') return 'i8';
+        if (text === 'char' || text === 'signed char') return 'i8';
+        if (text === 'unsigned char') return 'u8';
+
+        // Reject 16-bit and larger types
+        if (text === 'int' || text === 'short' || text === 'signed int' || text === 'signed short' ||
+            text === 'unsigned int' || text === 'unsigned short' || text === 'long' || text === 'unsigned' || text === 'signed') {
+            throw new Error(`Type '${text}' is not supported (only 8-bit types: char, signed char, unsigned char)`);
+        }
+
         if (text.startsWith('float') || text.startsWith('double')) {
             throw new Error(`Floating-point type '${text}' is not supported on this target`);
         }
         if (text.startsWith('struct') || text.startsWith('union') || text.startsWith('enum')) {
             throw new Error(`Type '${text.split(/\s/)[0]}' is not supported on this target`);
         }
-        return 'u8';
+        if (node.type === 'type_identifier') {
+            throw new Error(`Unknown type '${text}' (typedef is not supported on this target)`);
+        }
+        throw new Error(`Type '${text}' is not supported on this target`);
     }
 
-    private parseDeclarator(node: Parser.SyntaxNode): { name: string; isArray: boolean; arraySize: number } {
+    private parseDeclarator(node: Parser.SyntaxNode): { name: string; isArray: boolean; arraySize: number; isPointer: boolean } {
         if (node.type === 'init_declarator') {
             const inner = node.childForFieldName('declarator');
             if (inner) return this.parseDeclarator(inner);
-            return { name: '', isArray: false, arraySize: 0 };
+            return { name: '', isArray: false, arraySize: 0, isPointer: false };
         }
         if (node.type === 'pointer_declarator') {
             for (let i = 0; i < node.childCount; i++) {
                 const child = node.child(i);
                 if (child && child.type === 'identifier') {
-                    return { name: child.text.trim(), isArray: false, arraySize: 0 };
+                    return { name: child.text.trim(), isArray: false, arraySize: 0, isPointer: true };
                 }
                 if (child && child.type === 'array_declarator') {
+                    const r = this.parseDeclarator(child);
+                    return { ...r, isPointer: true };
+                }
+                if (child && child.type === 'pointer_declarator') {
                     return this.parseDeclarator(child);
                 }
             }
-            return { name: node.text.trim(), isArray: false, arraySize: 0 };
+            return { name: node.text.trim(), isArray: false, arraySize: 0, isPointer: true };
         }
         const arrayDecl = this.findNodeByType(node, 'array_declarator');
         if (arrayDecl) {
@@ -1584,10 +2133,23 @@ class SC8P053Compiler {
             return {
                 name: nameNode ? nameNode.text.trim() : '',
                 isArray: true,
-                arraySize: size
+                arraySize: size,
+                isPointer: false
             };
         }
-        return { name: node.text.trim(), isArray: false, arraySize: 0 };
+        return { name: node.text.trim(), isArray: false, arraySize: 0, isPointer: false };
+    }
+
+    private isPointerDeclarator(declaratorNode: Parser.SyntaxNode): boolean {
+        let node: Parser.SyntaxNode | null = declaratorNode;
+        while (node) {
+            if (node.type === 'pointer_declarator') return true;
+            if (node.type === 'function_declarator') return false;
+            const inner = node.childForFieldName('declarator');
+            if (!inner) break;
+            node = inner;
+        }
+        return false;
     }
 
     private findNodeByType(node: Parser.SyntaxNode, type: string): Parser.SyntaxNode | null {
@@ -1602,21 +2164,34 @@ class SC8P053Compiler {
         return null;
     }
 
-    private generateCode(node: Parser.SyntaxNode) {
-        if (this.dryRun) {
-            const savedLines = this.asmLines;
-            const noopArray: any = { push: () => { }, findIndex: () => -1, length: 0 };
-            this.asmLines = noopArray as any;
-            for (let i = 0; i < node.childCount; i++) {
-                const child = node.child(i);
-                if (child && child.type === 'function_definition') this.emitFn(child);
-            }
-            this.asmLines = savedLines;
-            return;
-        }
+    private generateCode(node: Parser.SyntaxNode, afterGlobalsAddr: number, afterGlobalsBank: number) {
+        const noopArray: any = { push: () => { }, findIndex: () => -1, length: 0 };
 
+        this.dryRun = true;
         const savedLines = this.asmLines;
+        this.asmLines = noopArray as any;
+        for (let i = 0; i < node.childCount; i++) {
+            const child = node.child(i);
+            if (child && child.type === 'function_definition') this.emitFn(child);
+        }
+        this.asmLines = savedLines;
+        this.dryRun = false;
+
+        for (const [, finfo] of this.fns) {
+            finfo.savedTempCount = finfo.tempCount;
+            finfo.frameSize += finfo.tempCount;
+        }
+        for (const [, finfo] of this.fns) {
+            finfo.frameBase = -1;
+        }
+        this.nextRamAddr = afterGlobalsAddr;
+        this.currentBank = afterGlobalsBank;
+        this.allocateCompiledStack();
+
         this.asmLines = [];
+
+        this.emitHeader();
+        this.emitRamDefinitions();
 
         const hasISR = this.hasISRFn();
         this.asmLines.push('JP V_MAIN');
@@ -1624,19 +2199,14 @@ class SC8P053Compiler {
             this.asmLines.push('ORG 0x04');
             this.asmLines.push('JP __INTERRUPT');
         }
-        // this.asmLines.push('');
 
         for (let i = 0; i < node.childCount; i++) {
             const child = node.child(i);
             if (child && child.type === 'function_definition') this.emitFn(child);
         }
 
-        const codeLines = this.asmLines;
-        this.asmLines = savedLines;
-
-        this.emitHeader();
-        this.emitRamDefinitions();
-        this.asmLines.push(...codeLines);
+        this.resolveTempAddresses();
+        this.emitOutput();
     }
 
     private emitGlobalInits() {
@@ -1662,13 +2232,12 @@ class SC8P053Compiler {
         const nameNode = funcDeclarator.childForFieldName('declarator');
         const funcName = nameNode ? nameNode.text.trim() : '';
 
-        const funcInfo = this.fns.get(funcName);
-        if (!funcInfo) throw new Error(`Function ${funcName} not found`);
+        const fn = this.fns.get(funcName);
+        if (!fn) throw new Error(`Function ${funcName} not found`);
 
-        this.currentFn = funcInfo;
+        this.currentFn = fn;
         this.tempCounter = 0;
-        funcInfo.tempCount = 0;
-        funcInfo.hasEarlyReturn = false;
+        fn.tempCount = 0;
         this.currentAsmBank = 0;
 
         if (!this.dryRun) {
@@ -1676,9 +2245,9 @@ class SC8P053Compiler {
             this.asmLines.push(`;@LINE ${this.currentSourceLine}`);
             this.asmLines.push(`;@FN_START ${funcName}`);
         }
-        this.asmLines.push(`${funcInfo.asmName}:`);
+        this.asmLines.push(`${fn.asmName}:`);
 
-        if (funcInfo.isISR) {
+        if (fn.isISR) {
             this.asmLines.push('LD ISR_ACC,A');
             this.asmLines.push('SWAPA STATUS');
             this.asmLines.push('LD ISR_STATUS,A');
@@ -1696,11 +2265,11 @@ class SC8P053Compiler {
         }
 
         const bodyNode = node.childForFieldName('body');
-        if (bodyNode) this.emitCompoundStatement(bodyNode, funcInfo);
+        if (bodyNode) this.emitCompoundStatement(bodyNode, fn);
 
         if (funcName === 'main') {
             this.asmLines.push('STOP');
-        } else if (funcInfo.isISR) {
+        } else if (fn.isISR) {
             this.asmLines.push('LD A,ISR_PCLATH');
             this.asmLines.push('LD PCLATH,A');
             this.asmLines.push('LD A,ISR_FSR');
@@ -1711,8 +2280,6 @@ class SC8P053Compiler {
             this.asmLines.push('SWAPA ISR_ACC');
             this.asmLines.push('RETI');
         } else {
-            if (!funcInfo.hasEarlyReturn && funcInfo.returnType !== 'void') {
-            }
             this.ensureBank0();
             this.asmLines.push('RET');
         }
@@ -1723,61 +2290,64 @@ class SC8P053Compiler {
         this.currentFn = null;
     }
 
-    private emitCompoundStatement(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitCompoundStatement(node: Parser.SyntaxNode, fn: Fn) {
         for (let i = 0; i < node.childCount; i++) {
             const child = node.child(i);
             if (!child) continue;
             if (child.type === '{' || child.type === '}') continue;
-            this.emitStatement(child, funcInfo);
+            this.emitStatement(child, fn);
         }
     }
 
-    private emitStatement(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitStatement(node: Parser.SyntaxNode, fn: Fn) {
         if (!this.dryRun) {
             this.currentSourceLine = node.startPosition.row + 1;
             this.asmLines.push(`;@LINE ${this.currentSourceLine}`);
         }
         switch (node.type) {
-            case 'expression_statement': this.emitExpressionStatement(node, funcInfo); break;
-            case 'if_statement': this.emitIfStatement(node, funcInfo); break;
-            case 'while_statement': this.emitWhileStatement(node, funcInfo); break;
-            case 'for_statement': this.emitForStatement(node, funcInfo); break;
-            case 'do_statement': this.emitDoWhileStatement(node, funcInfo); break;
-            case 'return_statement': this.emitReturnStatement(node, funcInfo); break;
-            case 'compound_statement': this.emitCompoundStatement(node, funcInfo); break;
-            case 'break_statement': this.emitBreakStatement(funcInfo); break;
-            case 'continue_statement': this.emitContinueStatement(funcInfo); break;
-            case 'declaration': this.emitDeclarationInit(node, funcInfo); break;
-            case 'switch_statement': this.emitSwitchStatement(node, funcInfo); break;
+            case 'expression_statement': this.emitExpressionStatement(node, fn); break;
+            case 'if_statement': this.emitIfStatement(node, fn); break;
+            case 'while_statement': this.emitWhileStatement(node, fn); break;
+            case 'for_statement': this.emitForStatement(node, fn); break;
+            case 'do_statement': this.emitDoWhileStatement(node, fn); break;
+            case 'return_statement': this.emitReturnStatement(node, fn); break;
+            case 'compound_statement': this.emitCompoundStatement(node, fn); break;
+            case 'break_statement': this.emitBreakStatement(fn); break;
+            case 'continue_statement': this.emitContinueStatement(fn); break;
+            case 'declaration': this.emitDeclarationInit(node, fn); break;
+            case 'switch_statement': this.emitSwitchStatement(node, fn); break;
+            case 'goto_statement': throw new Error(`'goto' is not supported on this target`);
+            case 'labeled_statement': throw new Error(`Labels are not supported on this target`);
+            default: throw new Error(`Unsupported statement type: '${node.type}'`);
         }
     }
 
-    private emitExpressionStatement(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitExpressionStatement(node: Parser.SyntaxNode, fn: Fn) {
         const expr = node.child(0);
         if (expr) {
-            this.emitExpression(expr, funcInfo);
+            this.emitExpression(expr, fn);
         }
     }
 
-    private emitIfStatement(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitIfStatement(node: Parser.SyntaxNode, fn: Fn) {
         const condition = node.childForFieldName('condition');
         const consequence = node.childForFieldName('consequence');
         const alternative = node.childForFieldName('alternative');
 
-        const elseLabel = this.newLabel(funcInfo);
-        const endLabel = this.newLabel(funcInfo);
+        const elseLabel = this.newLabel(fn);
+        const endLabel = this.newLabel(fn);
 
-        if (condition) this.emitCondition(condition, funcInfo, elseLabel, false);
-        if (consequence) this.emitStatement(consequence, funcInfo);
+        if (condition) this.emitCondition(condition, fn, elseLabel, false);
+        if (consequence) this.emitStatement(consequence, fn);
 
         if (alternative) {
             this.asmLines.push(`JP ${endLabel}`);
             this.emitLabel(elseLabel);
             if (alternative.type === 'else_clause') {
                 const elseBody = this.extractElseBody(alternative);
-                if (elseBody) this.emitStatement(elseBody, funcInfo);
+                if (elseBody) this.emitStatement(elseBody, fn);
             } else {
-                this.emitStatement(alternative, funcInfo);
+                this.emitStatement(alternative, fn);
             }
             this.emitLabel(endLabel);
         } else {
@@ -1793,59 +2363,59 @@ class SC8P053Compiler {
         return null;
     }
 
-    private emitWhileStatement(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitWhileStatement(node: Parser.SyntaxNode, fn: Fn) {
         const condition = node.childForFieldName('condition');
         const body = node.childForFieldName('body');
 
-        const loopLabel = this.newLabel(funcInfo);
-        const endLabel = this.newLabel(funcInfo);
+        const loopLabel = this.newLabel(fn);
+        const endLabel = this.newLabel(fn);
 
-        const prevBreak = funcInfo.breakLabel;
-        const prevContinue = funcInfo.continueLabel;
-        funcInfo.breakLabel = endLabel;
-        funcInfo.continueLabel = loopLabel;
+        const prevBreak = fn.breakLabel;
+        const prevContinue = fn.continueLabel;
+        fn.breakLabel = endLabel;
+        fn.continueLabel = loopLabel;
 
         this.emitLabel(loopLabel);
-        if (condition) this.emitCondition(condition, funcInfo, endLabel, false);
-        if (body) this.emitStatement(body, funcInfo);
+        if (condition) this.emitCondition(condition, fn, endLabel, false);
+        if (body) this.emitStatement(body, fn);
         this.asmLines.push(`JP ${loopLabel}`);
         this.emitLabel(endLabel);
 
-        funcInfo.breakLabel = prevBreak;
-        funcInfo.continueLabel = prevContinue;
+        fn.breakLabel = prevBreak;
+        fn.continueLabel = prevContinue;
     }
 
-    private emitDoWhileStatement(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitDoWhileStatement(node: Parser.SyntaxNode, fn: Fn) {
         const body = node.childForFieldName('body');
         const condition = node.childForFieldName('condition');
 
-        const loopLabel = this.newLabel(funcInfo);
-        const condLabel = this.newLabel(funcInfo);
-        const endLabel = this.newLabel(funcInfo);
+        const loopLabel = this.newLabel(fn);
+        const condLabel = this.newLabel(fn);
+        const endLabel = this.newLabel(fn);
 
-        const prevBreak = funcInfo.breakLabel;
-        const prevContinue = funcInfo.continueLabel;
-        funcInfo.breakLabel = endLabel;
-        funcInfo.continueLabel = condLabel;
+        const prevBreak = fn.breakLabel;
+        const prevContinue = fn.continueLabel;
+        fn.breakLabel = endLabel;
+        fn.continueLabel = condLabel;
 
         this.emitLabel(loopLabel);
-        if (body) this.emitStatement(body, funcInfo);
+        if (body) this.emitStatement(body, fn);
         this.emitLabel(condLabel);
-        if (condition) this.emitCondition(condition, funcInfo, loopLabel, true);
+        if (condition) this.emitCondition(condition, fn, loopLabel, true);
         this.emitLabel(endLabel);
 
-        funcInfo.breakLabel = prevBreak;
-        funcInfo.continueLabel = prevContinue;
+        fn.breakLabel = prevBreak;
+        fn.continueLabel = prevContinue;
     }
 
-    private emitSwitchStatement(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitSwitchStatement(node: Parser.SyntaxNode, fn: Fn) {
         const condition = node.childForFieldName('condition');
         const body = node.childForFieldName('body');
         if (!condition || !body) return;
 
-        const endLabel = this.newLabel(funcInfo);
-        const prevBreak = funcInfo.breakLabel;
-        funcInfo.breakLabel = endLabel;
+        const endLabel = this.newLabel(fn);
+        const prevBreak = fn.breakLabel;
+        fn.breakLabel = endLabel;
 
         const caseStatements: Parser.SyntaxNode[] = [];
         for (let i = 0; i < body.childCount; i++) {
@@ -1859,7 +2429,7 @@ class SC8P053Compiler {
         let defaultLabel: string | null = null;
 
         for (let i = 0; i < caseStatements.length; i++) {
-            const label = this.newLabel(funcInfo);
+            const label = this.newLabel(fn);
             caseLabels.push(label);
             const caseNode = caseStatements[i];
             const firstChild = caseNode.child(0);
@@ -1868,7 +2438,7 @@ class SC8P053Compiler {
             }
         }
 
-        this.emitLoadAccumulator(condition, funcInfo);
+        this.emitLoadAccumulator(condition, fn);
         const t = this.allocTemp();
         this.emitLdAToTemp(t);
 
@@ -1903,52 +2473,52 @@ class SC8P053Compiler {
                 const child = caseNode.child(j);
                 if (child && child.type !== 'case' && child.type !== 'default' && child.type !== ':' && child.type !== 'number_literal' && child.type !== 'char_literal' && child.type !== 'identifier') {
                     if (child.type === 'expression_statement' || child.type === 'break_statement' || child.type === 'continue_statement' || child.type === 'declaration' || child.type === 'compound_statement' || child.type === 'if_statement' || child.type === 'while_statement' || child.type === 'for_statement' || child.type === 'do_statement' || child.type === 'return_statement' || child.type === 'switch_statement') {
-                        this.emitStatement(child, funcInfo);
+                        this.emitStatement(child, fn);
                     }
                 }
             }
         }
 
         this.emitLabel(endLabel);
-        funcInfo.breakLabel = prevBreak;
+        fn.breakLabel = prevBreak;
     }
 
-    private emitForStatement(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitForStatement(node: Parser.SyntaxNode, fn: Fn) {
         const initializer = node.childForFieldName('initializer');
         const condition = node.childForFieldName('condition');
         const update = node.childForFieldName('update');
         const body = node.childForFieldName('body');
 
-        const loopLabel = this.newLabel(funcInfo);
-        const updateLabel = this.newLabel(funcInfo);
-        const endLabel = this.newLabel(funcInfo);
+        const loopLabel = this.newLabel(fn);
+        const updateLabel = this.newLabel(fn);
+        const endLabel = this.newLabel(fn);
 
-        const prevBreak = funcInfo.breakLabel;
-        const prevContinue = funcInfo.continueLabel;
-        funcInfo.breakLabel = endLabel;
-        funcInfo.continueLabel = updateLabel;
+        const prevBreak = fn.breakLabel;
+        const prevContinue = fn.continueLabel;
+        fn.breakLabel = endLabel;
+        fn.continueLabel = updateLabel;
 
         if (initializer) {
             if (initializer.type === 'declaration') {
-                this.emitDeclarationInit(initializer, funcInfo);
+                this.emitDeclarationInit(initializer, fn);
             } else {
-                this.emitExpression(initializer, funcInfo);
+                this.emitExpression(initializer, fn);
             }
         }
 
         this.emitLabel(loopLabel);
-        if (condition) this.emitCondition(condition, funcInfo, endLabel, false);
-        if (body) this.emitStatement(body, funcInfo);
+        if (condition) this.emitCondition(condition, fn, endLabel, false);
+        if (body) this.emitStatement(body, fn);
         this.emitLabel(updateLabel);
-        if (update) this.emitExpression(update, funcInfo);
+        if (update) this.emitExpression(update, fn);
         this.asmLines.push(`JP ${loopLabel}`);
         this.emitLabel(endLabel);
 
-        funcInfo.breakLabel = prevBreak;
-        funcInfo.continueLabel = prevContinue;
+        fn.breakLabel = prevBreak;
+        fn.continueLabel = prevContinue;
     }
 
-    private emitDeclarationInit(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitDeclarationInit(node: Parser.SyntaxNode, fn: Fn) {
         let isStaticDecl = false;
         for (let i = 0; i < node.childCount; i++) {
             const child = node.child(i);
@@ -1972,29 +2542,29 @@ class SC8P053Compiler {
             if (declNode) {
                 if (declNode.type === 'array_declarator') {
                     const idNode = declNode.childForFieldName('declarator');
-                    if (idNode) sym = this.resolveSymbol(idNode, funcInfo);
+                    if (idNode) sym = this.resolveSymbol(idNode, fn);
                 } else if (declNode.type === 'pointer_declarator') {
                     for (let i = 0; i < declNode.childCount; i++) {
                         const child = declNode.child(i);
                         if (child && child.type === 'identifier') {
-                            sym = this.resolveSymbol(child, funcInfo);
+                            sym = this.resolveSymbol(child, fn);
                             break;
                         }
                         if (child && child.type === 'array_declarator') {
                             const idNode = child.childForFieldName('declarator');
-                            if (idNode) sym = this.resolveSymbol(idNode, funcInfo);
+                            if (idNode) sym = this.resolveSymbol(idNode, fn);
                             break;
                         }
                     }
                 } else {
-                    sym = this.resolveSymbol(declNode, funcInfo);
+                    sym = this.resolveSymbol(declNode, fn);
                 }
             }
 
             if (isStaticDecl && sym && sym.isStatic) continue;
 
             if (valueNode) {
-                if (sym && sym.isArray && valueNode.type === 'initializer_list') {
+                if (sym && sym.typeInfo.isArray && valueNode.type === 'initializer_list') {
                     let elemIdx = 0;
                     for (let j = 0; j < valueNode.childCount; j++) {
                         const initChild = valueNode.child(j);
@@ -2003,20 +2573,20 @@ class SC8P053Compiler {
                         if (constVal !== null) {
                             this.asmLines.push(`LDIA 0x${(constVal & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
                         } else {
-                            this.emitLoadAccumulator(initChild, funcInfo);
+                            this.emitLoadAccumulator(initChild, fn);
                         }
                         this.emitLdAToArrayElem(sym, elemIdx);
                         elemIdx++;
                     }
                 } else {
-                    this.emitLoadAccumulator(valueNode, funcInfo);
+                    this.emitLoadAccumulator(valueNode, fn);
                     if (sym) this.emitLdAToSym(sym);
                 }
             }
         }
     }
 
-    private emitReturnStatement(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitReturnStatement(node: Parser.SyntaxNode, fn: Fn) {
         let value: Parser.SyntaxNode | null = node.childForFieldName('value');
         if (!value) {
             for (let i = 0; i < node.childCount; i++) {
@@ -2027,16 +2597,19 @@ class SC8P053Compiler {
                 }
             }
         }
-        if (value && funcInfo.returnType === 'void') {
-            throw new Error(`Function '${funcInfo.name}' is void and should not return a value`);
+        if (value && fn.returnType === 'void') {
+            throw new Error(`Function '${fn.name}' is void and should not return a value`);
         }
-        if (value && funcInfo.isISR) {
-            throw new Error(`ISR function '${funcInfo.name}' should not return a value`);
+        if (value && fn.isISR) {
+            throw new Error(`ISR function '${fn.name}' should not return a value`);
         }
-        if (value) this.emitLoadAccumulator(value, funcInfo);
-        if (funcInfo.name === 'main') {
+        if (!value && fn.returnType !== 'void' && fn.name !== 'main' && !fn.isISR) {
+            throw new Error(`Non-void function '${fn.name}' must return a value`);
+        }
+        if (value) this.emitLoadAccumulator(value, fn);
+        if (fn.name === 'main') {
             this.asmLines.push('STOP');
-        } else if (funcInfo.isISR) {
+        } else if (fn.isISR) {
             this.asmLines.push('LD A,ISR_PCLATH');
             this.asmLines.push('LD PCLATH,A');
             this.asmLines.push('LD A,ISR_FSR');
@@ -2049,29 +2622,28 @@ class SC8P053Compiler {
         } else {
             this.ensureBank0();
             this.asmLines.push('RET');
-            funcInfo.hasEarlyReturn = true;
         }
     }
 
-    private emitBreakStatement(funcInfo: Fn) {
-        if (funcInfo.breakLabel) this.asmLines.push(`JP ${funcInfo.breakLabel}`);
+    private emitBreakStatement(fn: Fn) {
+        if (fn.breakLabel) this.asmLines.push(`JP ${fn.breakLabel}`);
     }
 
-    private emitContinueStatement(funcInfo: Fn) {
-        if (funcInfo.continueLabel) this.asmLines.push(`JP ${funcInfo.continueLabel}`);
+    private emitContinueStatement(fn: Fn) {
+        if (fn.continueLabel) this.asmLines.push(`JP ${fn.continueLabel}`);
     }
 
-    private emitCondition(node: Parser.SyntaxNode, funcInfo: Fn, targetLabel: string, jumpOnTrue: boolean) {
+    private emitCondition(node: Parser.SyntaxNode, fn: Fn, targetLabel: string, jumpOnTrue: boolean) {
         const inner = this.unwrapParentheses(node);
 
         if (inner.type === 'binary_expression') {
             const operator = this.getChildByField(inner, 'operator');
             if (operator && ['==', '!=', '<', '>', '<=', '>='].includes(operator.text)) {
-                this.emitComparison(inner, funcInfo, targetLabel, jumpOnTrue);
+                this.emitComparison(inner, fn, targetLabel, jumpOnTrue);
                 return;
             }
             if (operator && (operator.text === '&&' || operator.text === '||')) {
-                this.emitLogicalOp(inner, funcInfo, targetLabel, jumpOnTrue);
+                this.emitLogicalOp(inner, fn, targetLabel, jumpOnTrue);
                 return;
             }
         }
@@ -2081,13 +2653,13 @@ class SC8P053Compiler {
             if (opNode && opNode.text === '!') {
                 const operand = inner.childForFieldName('argument');
                 if (operand) {
-                    this.emitCondition(operand, funcInfo, targetLabel, !jumpOnTrue);
+                    this.emitCondition(operand, fn, targetLabel, !jumpOnTrue);
                     return;
                 }
             }
         }
 
-        this.emitLoadAccumulator(inner, funcInfo);
+        this.emitLoadAccumulator(inner, fn);
         if (jumpOnTrue) {
             this.asmLines.push('HSUBIA 0x00');
             this.asmLines.push('SNZB STATUS,2');
@@ -2099,11 +2671,11 @@ class SC8P053Compiler {
         }
     }
 
-    private inferExprType(node: Parser.SyntaxNode, funcInfo: Fn): Type {
+    private inferExprType(node: Parser.SyntaxNode, fn: Fn): Type {
         const inner = this.unwrapParentheses(node);
         if (inner.type === 'identifier') {
-            const sym = this.resolveSymbol(inner, funcInfo);
-            if (sym) return sym.type;
+            const sym = this.resolveSymbol(inner, fn);
+            if (sym) return sym.typeInfo.type;
         }
         if (inner.type === 'number_literal') {
             const val = this.parseNumber(inner.text);
@@ -2114,20 +2686,20 @@ class SC8P053Compiler {
             const opNode = this.getChildByField(inner, 'operator');
             if (opNode && opNode.text === '-') return 'i8';
             const arg = inner.childForFieldName('argument');
-            if (arg) return this.inferExprType(arg, funcInfo);
+            if (arg) return this.inferExprType(arg, fn);
         }
         if (inner.type === 'binary_expression') {
             const left = inner.childForFieldName('left');
             const right = inner.childForFieldName('right');
             if (left && right) {
-                const lt = this.inferExprType(left, funcInfo);
-                const rt = this.inferExprType(right, funcInfo);
+                const lt = this.inferExprType(left, fn);
+                const rt = this.inferExprType(right, fn);
                 if (lt === 'i8' || rt === 'i8') return 'i8';
             }
         }
         if (inner.type === 'subscript_expression') {
-            const sym = this.resolveArraySymbol(inner, funcInfo);
-            if (sym) return sym.type;
+            const sym = this.resolveArraySymbol(inner, fn);
+            if (sym) return sym.typeInfo.type;
         }
         if (inner.type === 'call_expression') {
             const funcNode = inner.childForFieldName('function');
@@ -2142,108 +2714,105 @@ class SC8P053Compiler {
         }
         if (inner.type === 'update_expression') {
             const arg = inner.childForFieldName('argument');
-            if (arg) return this.inferExprType(arg, funcInfo);
+            if (arg) return this.inferExprType(arg, fn);
         }
         if (inner.type === 'assignment_expression') {
             const left = inner.childForFieldName('left');
-            if (left) return this.inferExprType(left, funcInfo);
+            if (left) return this.inferExprType(left, fn);
         }
         if (inner.type === 'conditional_expression') {
             const consequent = inner.childForFieldName('consequence');
-            if (consequent) return this.inferExprType(consequent, funcInfo);
+            if (consequent) return this.inferExprType(consequent, fn);
         }
         return 'u8';
     }
 
-    private emitComparison(node: Parser.SyntaxNode, funcInfo: Fn, targetLabel: string, jumpOnTrue: boolean) {
+    private emitComparison(node: Parser.SyntaxNode, fn: Fn, targetLabel: string, jumpOnTrue: boolean) {
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
         const operator = this.getChildByField(node, 'operator');
         if (!left || !right || !operator) return;
-        this.emitComparisonGeneric(left, right, operator.text, funcInfo, targetLabel, jumpOnTrue);
-    }
 
-    private emitComparisonGeneric(left: Parser.SyntaxNode, right: Parser.SyntaxNode, op: string, funcInfo: Fn, targetLabel: string, jumpOnTrue: boolean) {
         const rightConst = this.getConstantValue(right);
         const leftConst = this.getConstantValue(left);
-        const isSigned = this.inferExprType(left, funcInfo) === 'i8' || this.inferExprType(right, funcInfo) === 'i8';
+        const isSigned = this.inferExprType(left, fn) === 'i8' || this.inferExprType(right, fn) === 'i8';
 
-        if (isSigned && ['<', '>', '<=', '>='].includes(op)) {
-            this.emitSignedComparison(left, right, op, funcInfo, targetLabel, jumpOnTrue);
+        if (isSigned && ['<', '>', '<=', '>='].includes(operator.text)) {
+            this.emitSignedComparison(left, right, operator.text, fn, targetLabel, jumpOnTrue);
             return;
         }
 
         if (rightConst !== null) {
-            this.emitLoadAccumulator(left, funcInfo);
+            this.emitLoadAccumulator(left, fn);
             this.asmLines.push(`HSUBIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`);
         } else if (leftConst !== null) {
             const reversedOp: Record<string, string> = { '<': '>', '>': '<', '<=': '>=', '>=': '<=', '==': '==', '!=': '!=' };
-            this.emitLoadAccumulator(right, funcInfo);
+            this.emitLoadAccumulator(right, fn);
             this.asmLines.push(`HSUBIA 0x${leftConst.toString(16).toUpperCase().padStart(2, '0')}`);
-            this.emitComparisonFlags(reversedOp[op], funcInfo, targetLabel, jumpOnTrue);
+            this.emitComparisonFlags(reversedOp[operator.text], fn, targetLabel, jumpOnTrue);
             return;
         } else {
-            const lsym = this.resolveSymbol(left, funcInfo);
-            const rsym = this.resolveSymbol(right, funcInfo);
+            const lsym = this.resolveSymbol(left, fn);
+            const rsym = this.resolveSymbol(right, fn);
             if (lsym && rsym) {
                 this.emitLdSymToA(rsym);
                 this.emitOpSym('SUBA', lsym);
             } else if (rsym) {
-                this.emitLoadAccumulator(left, funcInfo);
+                this.emitLoadAccumulator(left, fn);
                 const t = this.allocTemp();
                 this.emitLdAToTemp(t);
                 this.emitLdSymToA(rsym);
                 this.emitOpTemp('SUBA', t);
             } else if (lsym) {
-                this.emitLoadAccumulator(right, funcInfo);
+                this.emitLoadAccumulator(right, fn);
                 this.emitOpSym('SUBA', lsym);
             } else {
-                this.emitLoadAccumulator(left, funcInfo);
+                this.emitLoadAccumulator(left, fn);
                 const t = this.allocTemp();
                 this.emitLdAToTemp(t);
-                this.emitLoadAccumulator(right, funcInfo);
+                this.emitLoadAccumulator(right, fn);
                 this.emitOpTemp('SUBA', t);
             }
         }
 
-        this.emitComparisonFlags(op, funcInfo, targetLabel, jumpOnTrue);
+        this.emitComparisonFlags(operator.text, fn, targetLabel, jumpOnTrue);
     }
 
-    private emitSignedComparison(left: Parser.SyntaxNode, right: Parser.SyntaxNode, op: string, funcInfo: Fn, targetLabel: string, jumpOnTrue: boolean) {
+    private emitSignedComparison(left: Parser.SyntaxNode, right: Parser.SyntaxNode, op: string, fn: Fn, targetLabel: string, jumpOnTrue: boolean) {
         const rightConst = this.getConstantValue(right);
         const leftConst = this.getConstantValue(left);
 
         if (rightConst !== null) {
-            this.emitLoadAccumulator(left, funcInfo);
+            this.emitLoadAccumulator(left, fn);
             this.asmLines.push('XORIA 0x80');
             this.asmLines.push(`HSUBIA 0x${((rightConst ^ 0x80) & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
         } else if (leftConst !== null) {
             const reversedOp: Record<string, string> = { '<': '>', '>': '<', '<=': '>=', '>=': '<=' };
-            this.emitLoadAccumulator(right, funcInfo);
+            this.emitLoadAccumulator(right, fn);
             this.asmLines.push('XORIA 0x80');
             this.asmLines.push(`HSUBIA 0x${((leftConst ^ 0x80) & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
-            this.emitComparisonFlags(reversedOp[op], funcInfo, targetLabel, jumpOnTrue);
+            this.emitComparisonFlags(reversedOp[op], fn, targetLabel, jumpOnTrue);
             return;
         } else {
-            this.emitLoadAccumulator(right, funcInfo);
+            this.emitLoadAccumulator(right, fn);
             this.asmLines.push('XORIA 0x80');
             const t = this.allocTemp();
             this.emitLdAToTemp(t);
-            this.emitLoadAccumulator(left, funcInfo);
+            this.emitLoadAccumulator(left, fn);
             this.asmLines.push('XORIA 0x80');
             this.emitOpTemp('HSUBA', t);
         }
 
-        this.emitComparisonFlags(op, funcInfo, targetLabel, jumpOnTrue);
+        this.emitComparisonFlags(op, fn, targetLabel, jumpOnTrue);
     }
 
-    private emitComparisonFlags(op: string, funcInfo: Fn, targetLabel: string, jumpOnTrue: boolean) {
+    private emitComparisonFlags(op: string, fn: Fn, targetLabel: string, jumpOnTrue: boolean) {
         if (op === '<') {
             if (jumpOnTrue) { this.asmLines.push('SNZB STATUS,0'); this.asmLines.push(`JP ${targetLabel}`); }
             else { this.asmLines.push('SZB STATUS,0'); this.asmLines.push(`JP ${targetLabel}`); }
         } else if (op === '>') {
             if (jumpOnTrue) {
-                const cont = this.newLabel(funcInfo);
+                const cont = this.newLabel(fn);
                 this.asmLines.push('SNZB STATUS,0');
                 this.asmLines.push(`JP ${cont}`);
                 this.asmLines.push('SZB STATUS,2');
@@ -2263,7 +2832,7 @@ class SC8P053Compiler {
                 this.asmLines.push('SZB STATUS,2');
                 this.asmLines.push(`JP ${targetLabel}`);
             } else {
-                const cont = this.newLabel(funcInfo);
+                const cont = this.newLabel(fn);
                 this.asmLines.push('SNZB STATUS,0');
                 this.asmLines.push(`JP ${cont}`);
                 this.asmLines.push('SZB STATUS,2');
@@ -2283,7 +2852,7 @@ class SC8P053Compiler {
         }
     }
 
-    private emitLogicalOp(node: Parser.SyntaxNode, funcInfo: Fn, targetLabel: string, jumpOnTrue: boolean) {
+    private emitLogicalOp(node: Parser.SyntaxNode, fn: Fn, targetLabel: string, jumpOnTrue: boolean) {
         const operator = this.getChildByField(node, 'operator');
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
@@ -2291,39 +2860,592 @@ class SC8P053Compiler {
 
         if (operator.text === '&&') {
             if (jumpOnTrue) {
-                const fail = this.newLabel(funcInfo);
-                this.emitCondition(left, funcInfo, fail, false);
-                this.emitCondition(right, funcInfo, targetLabel, true);
+                const fail = this.newLabel(fn);
+                this.emitCondition(left, fn, fail, false);
+                this.emitCondition(right, fn, targetLabel, true);
                 this.emitLabel(fail);
             } else {
-                this.emitCondition(left, funcInfo, targetLabel, false);
-                this.emitCondition(right, funcInfo, targetLabel, false);
+                this.emitCondition(left, fn, targetLabel, false);
+                this.emitCondition(right, fn, targetLabel, false);
             }
         } else {
             if (jumpOnTrue) {
-                this.emitCondition(left, funcInfo, targetLabel, true);
-                this.emitCondition(right, funcInfo, targetLabel, true);
+                this.emitCondition(left, fn, targetLabel, true);
+                this.emitCondition(right, fn, targetLabel, true);
             } else {
-                const pass = this.newLabel(funcInfo);
-                this.emitCondition(left, funcInfo, pass, true);
-                this.emitCondition(right, funcInfo, targetLabel, false);
+                const pass = this.newLabel(fn);
+                this.emitCondition(left, fn, pass, true);
+                this.emitCondition(right, fn, targetLabel, false);
                 this.emitLabel(pass);
             }
         }
     }
 
-    private emitExpression(node: Parser.SyntaxNode, funcInfo: Fn): void {
+    private emitExpression(node: Parser.SyntaxNode, fn: Fn): void {
         const inner = this.unwrapParentheses(node);
 
         switch (inner.type) {
-            case 'assignment_expression': this.emitAssignment(inner, funcInfo); break;
-            case 'call_expression': this.emitCallExpression(inner, funcInfo); break;
-            case 'update_expression': this.emitUpdateExpression(inner, funcInfo); break;
-            default: this.emitLoadAccumulator(inner, funcInfo); break;
+            case 'assignment_expression': this.emitAssignment(inner, fn); break;
+            case 'call_expression': this.emitCallExpression(inner, fn); break;
+            case 'update_expression': this.emitUpdateExpression(inner, fn); break;
+            default: this.emitLoadAccumulator(inner, fn); break;
         }
     }
 
-    private emitAssignment(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private isValidLvalue(node: Parser.SyntaxNode, fn: Fn): boolean {
+        const inner = this.unwrapParentheses(node);
+        if (inner.type === 'identifier') {
+            return this.resolveSymbol(node, fn) !== null;
+        }
+        if (inner.type === 'subscript_expression') return true;
+        if (inner.type === 'pointer_expression') return true;
+        if (inner.type === 'unary_expression') {
+            const opNode = this.getChildByField(inner, 'operator');
+            if (opNode && opNode.text === '*') return true;
+        }
+        return false;
+    }
+
+    private typeInfoToString(typeInfo: TypeInfo): string {
+        let type = typeInfo.type;
+        if (typeInfo.isArray) type += `[${typeInfo.arraySize}]`;
+        else if (typeInfo.isPointer) type += ' *';
+        return type;
+    }
+
+    private typeInfoOf(node: Parser.SyntaxNode, fn: Fn): TypeInfo {
+        const inner = this.unwrapParentheses(node);
+
+        if (inner.type === 'number_literal') return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        if (inner.type === 'char_literal') return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        if (inner.type === 'string_literal') return { type: 'u8', isArray: false, arraySize: 0, isPointer: true };
+
+        if (inner.type === 'pointer_declarator') {
+            const sym = this.resolveSymbol(inner, fn);
+            if (sym) return sym.typeInfo;
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: true };
+        }
+
+        if (inner.type === 'identifier') {
+            const sym = this.resolveSymbol(inner, fn);
+            if (!sym) return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+            return sym.typeInfo;
+        }
+
+        if (inner.type === 'pointer_expression') {
+            const opNode = inner.child(0);
+            if (opNode && opNode.text === '&') {
+                // 取地址操作：返回指向操作数类型的指针
+                const argNode = inner.child(1);
+                if (argNode) {
+                    const argType = this.typeInfoOf(argNode, fn);
+                    return { type: argType.type, isArray: false, arraySize: 0, isPointer: true };
+                }
+                return { type: 'u8', isArray: false, arraySize: 0, isPointer: true };
+            }
+            if (opNode && opNode.text === '*') {
+                const argNode = inner.child(1);
+                if (argNode) {
+                    const argType = this.typeInfoOf(argNode, fn);
+                    if (!argType.isPointer) {
+                        throw new Error(`Cannot dereference non-pointer type '${this.typeInfoToString(argType)}'`);
+                    }
+                    // 解引用操作：返回指针指向的类型
+                    return { type: argType.type, isArray: false, arraySize: 0, isPointer: false };
+                }
+                return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+            }
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        }
+
+        if (inner.type === 'subscript_expression') {
+            let checkedArray = false;
+            const arrayNode = inner.childForFieldName('array');
+            if (arrayNode) {
+                const arrType = this.typeInfoOf(arrayNode, fn);
+                if (!arrType.isArray && !arrType.isPointer) {
+                    throw new Error(`Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer`);
+                }
+                checkedArray = true;
+            }
+            if (!checkedArray) {
+                for (let i = 0; i < inner.childCount; i++) {
+                    const c = inner.child(i);
+                    if (c && c.type !== '[' && c.type !== ']') {
+                        const arrType = this.typeInfoOf(c, fn);
+                        if (!arrType.isArray && !arrType.isPointer) {
+                            throw new Error(`Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer`);
+                        }
+                        break;
+                    }
+                }
+            }
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        }
+
+        if (inner.type === 'binary_expression') {
+            const opNode = this.getChildByField(inner, 'operator');
+            const op = opNode ? opNode.text : '';
+            const left = inner.childForFieldName('left');
+            const right = inner.childForFieldName('right');
+            if (!left || !right) return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+            const leftType = this.typeInfoOf(left, fn);
+            const rightType = this.typeInfoOf(right, fn);
+
+            if (['+', '-', '*', '/', '%'].includes(op)) {
+                if (leftType.isPointer || rightType.isPointer) {
+                    if (op !== '+' && op !== '-') {
+                        throw new Error(`Cannot use '${op}' with pointer operand`);
+                    }
+                    if (leftType.isPointer && rightType.isPointer) {
+                        if (op === '+') throw new Error(`Cannot add two pointers`);
+                        if (op === '-') return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+                    }
+                    // 指针加减整数：结果仍是指针，保持基础类型
+                    const ptrType = leftType.isPointer ? leftType : rightType;
+                    return { type: ptrType.type, isArray: false, arraySize: 0, isPointer: true };
+                }
+                return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+            }
+            if (['&', '|', '^', '<<', '>>'].includes(op)) {
+                if (leftType.isPointer || rightType.isPointer) {
+                    throw new Error(`Cannot use '${op}' with pointer operand`);
+                }
+                return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+            }
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        }
+
+        if (inner.type === 'unary_expression') {
+            const opNode = this.getChildByField(inner, 'operator');
+            const argNode = inner.childForFieldName('argument');
+            const op = opNode ? opNode.text : '';
+            if (argNode) {
+                const argType = this.typeInfoOf(argNode, fn);
+                if (op === '-' || op === '~') {
+                    if (argType.isPointer) {
+                        throw new Error(`Cannot use '${op}' on pointer type`);
+                    }
+                }
+                if (op === '&') {
+                    // 取地址：返回指向操作数类型的指针
+                    return { type: argType.type, isArray: false, arraySize: 0, isPointer: true };
+                }
+                if (op === '*') {
+                    if (!argType.isPointer) {
+                        throw new Error(`Cannot dereference non-pointer type '${this.typeInfoToString(argType)}'`);
+                    }
+                    // 解引用：返回指针指向的类型
+                    return { type: argType.type, isArray: false, arraySize: 0, isPointer: false };
+                }
+            }
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        }
+
+        if (inner.type === 'call_expression') {
+            const fnNode = inner.childForFieldName('function');
+            if (fnNode) {
+                const fnName = fnNode.text.trim();
+                const fnInfo = this.fns.get(fnName);
+                if (fnInfo) {
+                    if (fnInfo.returnIsPointer) return { type: 'u8', isArray: false, arraySize: 0, isPointer: true };
+                    if (fnInfo.returnType === 'void') return { type: 'void', isArray: false, arraySize: 0, isPointer: false };
+                    return { type: fnInfo.returnType, isArray: false, arraySize: 0, isPointer: false };
+                }
+            }
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        }
+
+        if (inner.type === 'cast_expression') {
+            const typeNode = inner.childForFieldName('type');
+            if (typeNode && typeNode.text.includes('*')) return { type: 'u8', isArray: false, arraySize: 0, isPointer: true };
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        }
+
+        if (inner.type === 'update_expression') {
+            const updateArg = inner.childForFieldName('argument');
+            if (updateArg) return this.typeInfoOf(updateArg, fn);
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        }
+
+        if (inner.type === 'sizeof_expression') return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+
+        if (inner.type === 'conditional_expression') {
+            const consequent = inner.childForFieldName('consequence');
+            if (consequent) return this.typeInfoOf(consequent, fn);
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        }
+
+        if (inner.type === 'comma_expression') {
+            const children = inner.children;
+            for (let i = children.length - 1; i >= 0; i--) {
+                const c = children[i];
+                if (c && c.type !== ',' && c.type !== 'comma_expression') return this.typeInfoOf(c, fn);
+            }
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        }
+
+        if (inner.type === 'assignment_expression') {
+            const right = inner.childForFieldName('right');
+            if (right) return this.typeInfoOf(right, fn);
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        }
+
+        if (inner.type === 'parenthesized_expression') {
+            for (let i = 0; i < inner.childCount; i++) {
+                const c = inner.child(i);
+                if (c && c.type !== '(' && c.type !== ')') return this.typeInfoOf(c, fn);
+            }
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        }
+
+        return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+    }
+
+    private typeInfoOfLvalue(node: Parser.SyntaxNode, fn: Fn): TypeInfo {
+        const inner = this.unwrapParentheses(node);
+
+        if (inner.type === 'pointer_declarator') {
+            const sym = this.resolveSymbol(inner, fn);
+            if (sym) return sym.typeInfo;
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: true };
+        }
+
+        if (inner.type === 'identifier') {
+            const sym = this.resolveSymbol(inner, fn);
+            if (sym) return sym.typeInfo;
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        }
+
+        if (inner.type === 'subscript_expression') {
+            let checkedArray = false;
+            const arrayNode = inner.childForFieldName('array');
+            if (arrayNode) {
+                const arrType = this.typeInfoOf(arrayNode, fn);
+                if (!arrType.isArray && !arrType.isPointer) {
+                    throw new Error(`Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer`);
+                }
+                checkedArray = true;
+            }
+            if (!checkedArray) {
+                for (let i = 0; i < inner.childCount; i++) {
+                    const c = inner.child(i);
+                    if (c && c.type !== '[' && c.type !== ']') {
+                        const arrType = this.typeInfoOf(c, fn);
+                        if (!arrType.isArray && !arrType.isPointer) {
+                            throw new Error(`Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer`);
+                        }
+                        break;
+                    }
+                }
+            }
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        }
+
+        if (inner.type === 'pointer_expression') {
+            const opNode = inner.child(0);
+            if (opNode && opNode.text === '*') {
+                const argNode = inner.child(1);
+                if (argNode) {
+                    const argType = this.typeInfoOf(argNode, fn);
+                    if (!argType.isPointer) {
+                        throw new Error(`Cannot dereference non-pointer type '${this.typeInfoToString(argType)}'`);
+                    }
+                }
+                return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+            }
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: true };
+        }
+
+        if (inner.type === 'unary_expression') {
+            const opNode = this.getChildByField(inner, 'operator');
+            if (opNode && opNode.text === '*') {
+                const argNode = inner.childForFieldName('argument');
+                if (argNode) {
+                    const argType = this.typeInfoOf(argNode, fn);
+                    if (!argType.isPointer) {
+                        throw new Error(`Cannot dereference non-pointer type '${this.typeInfoToString(argType)}'`);
+                    }
+                }
+                return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+            }
+        }
+
+        return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+    }
+
+    private checkAssignmentCompat(leftType: TypeInfo, rightType: TypeInfo, op: string) {
+        if (leftType.isArray) {
+            throw new Error(`Cannot assign to array type '${this.typeInfoToString(leftType)}'`);
+        }
+        if (op !== '=' && leftType.isPointer) {
+            if (op !== '+=' && op !== '-=') {
+                throw new Error(`Cannot use '${op}' on pointer - only += and -= are allowed`);
+            }
+            if (rightType.isPointer || rightType.isArray) {
+                throw new Error(`Cannot ${op === '+=' ? 'add' : 'subtract'} pointer to/from pointer`);
+            }
+        }
+        if (op === '=') {
+            if (leftType.isPointer && !rightType.isPointer && !rightType.isArray && rightType.type !== 'u8') {
+                throw new Error(`Cannot assign '${this.typeInfoToString(rightType)}' to pointer type '${this.typeInfoToString(leftType)}'`);
+            }
+            if (!leftType.isPointer && leftType.type !== 'void' && rightType.isPointer) {
+                throw new Error(`Cannot assign pointer to non-pointer type '${this.typeInfoToString(leftType)}'`);
+            }
+            if (!leftType.isPointer && rightType.isArray) {
+                throw new Error(`Cannot assign array to non-pointer type '${this.typeInfoToString(leftType)}'`);
+            }
+        }
+    }
+
+    private checkAllTypes(rootNode: Parser.SyntaxNode) {
+        for (let i = 0; i < rootNode.childCount; i++) {
+            const child = rootNode.child(i);
+            if (!child || child.type !== 'function_definition') continue;
+            const declaratorNode = child.childForFieldName('declarator');
+            if (!declaratorNode) continue;
+            const funcDeclarator = this.findNodeByType(declaratorNode, 'function_declarator');
+            if (!funcDeclarator) continue;
+            const nameNode = funcDeclarator.childForFieldName('declarator');
+            const funcName = nameNode ? nameNode.text.trim() : '';
+            const fn = this.fns.get(funcName);
+            if (!fn) continue;
+            const body = child.childForFieldName('body');
+            if (!body) continue;
+            this.checkTypesInNode(body, fn);
+        }
+    }
+
+    private checkTypesInNode(node: Parser.SyntaxNode, fn: Fn) {
+        for (let i = 0; i < node.childCount; i++) {
+            const child = node.child(i);
+            if (!child) continue;
+            this.checkTypesInStatement(child, fn);
+        }
+    }
+
+    private checkTypesInStatement(stmt: Parser.SyntaxNode, fn: Fn) {
+        const inner = this.unwrapParentheses(stmt);
+
+        if (inner.type === 'compound_statement') {
+            this.checkTypesInNode(inner, fn);
+            return;
+        }
+
+        if (inner.type === 'expression_statement') {
+            const expr = inner.child(0);
+            if (expr) this.checkTypesInExpression(expr, fn);
+            return;
+        }
+
+        if (inner.type === 'declaration') {
+            for (let i = 0; i < inner.childCount; i++) {
+                const child = inner.child(i);
+                if (child && child.type === 'init_declarator') {
+                    const declarator = child.childForFieldName('declarator');
+                    const value = child.childForFieldName('value');
+                    if (declarator && value) {
+                        const leftType = this.typeInfoOfLvalue(declarator, fn);
+                        const rightType = this.typeInfoOf(value, fn);
+                        this.checkAssignmentCompat(leftType, rightType, '=');
+                    }
+                }
+            }
+            return;
+        }
+
+        if (inner.type === 'if_statement') {
+            const condition = inner.childForFieldName('condition');
+            const consequence = inner.childForFieldName('consequence');
+            const alternative = inner.childForFieldName('alternative');
+            if (condition) this.checkTypesInExpression(condition, fn);
+            if (consequence) this.checkTypesInStatement(consequence, fn);
+            if (alternative) {
+                if (alternative.type === 'else_clause') {
+                    for (let i = 0; i < alternative.childCount; i++) {
+                        const c = alternative.child(i);
+                        if (c && c.type !== 'else') this.checkTypesInStatement(c, fn);
+                    }
+                } else {
+                    this.checkTypesInStatement(alternative, fn);
+                }
+            }
+            return;
+        }
+
+        if (inner.type === 'while_statement' || inner.type === 'do_statement') {
+            const condition = inner.childForFieldName('condition');
+            const body = inner.childForFieldName('body');
+            if (condition) this.checkTypesInExpression(condition, fn);
+            if (body) this.checkTypesInStatement(body, fn);
+            return;
+        }
+
+        if (inner.type === 'for_statement') {
+            for (let i = 0; i < inner.childCount; i++) {
+                const child = inner.child(i);
+                if (child && child.type === 'parenthesized_expression') {
+                    for (let j = 0; j < child.childCount; j++) {
+                        const init = child.child(j);
+                        if (init) this.checkTypesInExpression(init, fn);
+                    }
+                }
+                if (child && child.type === 'compound_statement') {
+                    this.checkTypesInStatement(child, fn);
+                }
+            }
+            return;
+        }
+
+        if (inner.type === 'switch_statement') {
+            const condition = inner.childForFieldName('condition');
+            const body = inner.childForFieldName('body');
+            if (condition) this.checkTypesInExpression(condition, fn);
+            if (body) this.checkTypesInNode(body, fn);
+            return;
+        }
+
+        if (inner.type === 'return_statement') {
+            for (let i = 0; i < inner.childCount; i++) {
+                const child = inner.child(i);
+                if (child && child.type !== ';' && child.type !== 'return') {
+                    this.checkTypesInExpression(child, fn);
+                    const retType = this.typeInfoOf(child, fn);
+                    if (fn.returnType === 'void' && retType.type !== 'void') {
+                        throw new Error(`void function cannot return a value`);
+                    }
+                    if (fn.returnType !== 'void' && !fn.returnIsPointer && retType.isPointer) {
+                        throw new Error(`Cannot return pointer from non-pointer function`);
+                    }
+                    if (fn.returnType !== 'void' && !fn.returnIsPointer && retType.isArray) {
+                        throw new Error(`Cannot return array from function`);
+                    }
+                    if (fn.returnIsPointer && !retType.isPointer && !retType.isArray && retType.type !== 'u8') {
+                        throw new Error(`Cannot return '${this.typeInfoToString(retType)}' from pointer function`);
+                    }
+                }
+            }
+            return;
+        }
+
+        for (let i = 0; i < inner.childCount; i++) {
+            const child = inner.child(i);
+            if (child) this.checkTypesInStatement(child, fn);
+        }
+    }
+
+    private checkTypesInExpression(expr: Parser.SyntaxNode, fn: Fn) {
+        const inner = this.unwrapParentheses(expr);
+
+        if (inner.type === 'assignment_expression') {
+            const left = inner.childForFieldName('left');
+            const right = inner.childForFieldName('right');
+            const opNode = this.getChildByField(inner, 'operator');
+            const op = opNode ? opNode.text : '=';
+            if (left && right) {
+                const leftType = this.typeInfoOfLvalue(left, fn);
+                const rightType = this.typeInfoOf(right, fn);
+                this.checkAssignmentCompat(leftType, rightType, op);
+                this.checkTypesInExpression(left, fn);
+                this.checkTypesInExpression(right, fn);
+            }
+            return;
+        }
+
+        if (inner.type === 'binary_expression') {
+            const left = inner.childForFieldName('left');
+            const right = inner.childForFieldName('right');
+            if (left) this.checkTypesInExpression(left, fn);
+            if (right) this.checkTypesInExpression(right, fn);
+            this.typeInfoOf(inner, fn);
+            return;
+        }
+
+        if (inner.type === 'unary_expression') {
+            const arg = inner.childForFieldName('argument');
+            if (arg) this.checkTypesInExpression(arg, fn);
+            this.typeInfoOf(inner, fn);
+            return;
+        }
+
+        if (inner.type === 'pointer_expression') {
+            const argNode = inner.child(1);
+            if (argNode) this.checkTypesInExpression(argNode, fn);
+            this.typeInfoOf(inner, fn);
+            return;
+        }
+
+        if (inner.type === 'update_expression') {
+            const arg = inner.childForFieldName('argument');
+            if (arg) this.checkTypesInExpression(arg, fn);
+            this.typeInfoOf(inner, fn);
+            return;
+        }
+
+        if (inner.type === 'call_expression') {
+            const argsNode = inner.childForFieldName('arguments');
+            if (argsNode) {
+                for (let i = 0; i < argsNode.childCount; i++) {
+                    const arg = argsNode.child(i);
+                    if (arg && arg.type !== ',' && arg.type !== '(' && arg.type !== ')') {
+                        this.checkTypesInExpression(arg, fn);
+                    }
+                }
+            }
+            return;
+        }
+
+        if (inner.type === 'conditional_expression') {
+            const condition = inner.childForFieldName('condition');
+            const consequence = inner.childForFieldName('consequence');
+            const alternative = inner.childForFieldName('alternative');
+            if (condition) this.checkTypesInExpression(condition, fn);
+            if (consequence) this.checkTypesInExpression(consequence, fn);
+            if (alternative) this.checkTypesInExpression(alternative, fn);
+            return;
+        }
+
+        if (inner.type === 'comma_expression') {
+            for (let i = 0; i < inner.childCount; i++) {
+                const child = inner.child(i);
+                if (child && child.type !== ',') this.checkTypesInExpression(child, fn);
+            }
+            return;
+        }
+
+        if (inner.type === 'cast_expression') {
+            const value = inner.childForFieldName('value');
+            if (value) this.checkTypesInExpression(value, fn);
+            return;
+        }
+
+        if (inner.type === 'subscript_expression') {
+            this.typeInfoOf(inner, fn);
+            const arrayNode = inner.childForFieldName('array');
+            const indexNode = inner.childForFieldName('index');
+            if (arrayNode) this.checkTypesInExpression(arrayNode, fn);
+            if (indexNode) this.checkTypesInExpression(indexNode, fn);
+            return;
+        }
+
+        if (inner.type === 'parenthesized_expression') {
+            for (let i = 0; i < inner.childCount; i++) {
+                const child = inner.child(i);
+                if (child && child.type !== '(' && child.type !== ')') {
+                    this.checkTypesInExpression(child, fn);
+                }
+            }
+            return;
+        }
+
+        for (let i = 0; i < inner.childCount; i++) {
+            const child = inner.child(i);
+            if (child) this.checkTypesInExpression(child, fn);
+        }
+    }
+
+    private emitAssignment(node: Parser.SyntaxNode, fn: Fn) {
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
         const operator = this.getChildByField(node, 'operator');
@@ -2334,11 +3456,11 @@ class SC8P053Compiler {
 
         if (op === '=') {
             if (innerLeft.type === 'subscript_expression') {
-                this.emitArrayStore(innerLeft, right, funcInfo);
+                this.emitArrayStore(innerLeft, right, fn);
             } else if (innerLeft.type === 'pointer_expression') {
                 const addr = this.extractAddr(innerLeft);
                 if (addr !== null) {
-                    this.emitLoadAccumulator(right, funcInfo);
+                    this.emitLoadAccumulator(right, fn);
                     const equAddr = addr & 0x7F;
                     this.ensureBank(addr);
                     this.asmLines.push(`LD 0x${equAddr.toString(16).toUpperCase().padStart(2, '0')},A`);
@@ -2346,10 +3468,10 @@ class SC8P053Compiler {
                     const opNode = innerLeft.child(0);
                     const argNode = innerLeft.child(1);
                     if (opNode && opNode.text === '*' && argNode) {
-                        this.emitLoadAccumulator(right, funcInfo);
+                        this.emitLoadAccumulator(right, fn);
                         const t = this.allocTemp();
                         this.emitLdAToTemp(t);
-                        this.emitLoadAccumulator(argNode, funcInfo);
+                        this.emitLoadAccumulator(argNode, fn);
                         this.emitIndirectSetFSR();
                         this.emitLdTempToA(t);
                         this.asmLines.push('LD INDF,A');
@@ -2359,33 +3481,34 @@ class SC8P053Compiler {
                 const opNode = this.getChildByField(innerLeft, 'operator');
                 const argNode = innerLeft.childForFieldName('argument');
                 if (opNode && opNode.text === '*' && argNode) {
-                    this.emitLoadAccumulator(right, funcInfo);
+                    this.emitLoadAccumulator(right, fn);
                     const t = this.allocTemp();
                     this.emitLdAToTemp(t);
-                    this.emitLoadAccumulator(argNode, funcInfo);
+                    this.emitLoadAccumulator(argNode, fn);
                     this.emitIndirectSetFSR();
                     this.emitLdTempToA(t);
                     this.asmLines.push('LD INDF,A');
                 } else {
-                    this.emitLoadAccumulator(right, funcInfo);
-                    const sym = this.resolveSymbol(left, funcInfo);
+                    this.emitLoadAccumulator(right, fn);
+                    const sym = this.resolveSymbol(left, fn);
                     if (sym) this.emitLdAToSym(sym);
                 }
             } else {
-                this.emitLoadAccumulator(right, funcInfo);
-                const sym = this.resolveSymbol(left, funcInfo);
+                this.emitLoadAccumulator(right, fn);
+                const sym = this.resolveSymbol(left, fn);
                 if (sym) this.emitLdAToSym(sym);
+                else throw new Error(`Cannot assign to '${left.text.trim()}' - not an lvalue`);
             }
             return;
         }
 
         if (innerLeft.type === 'subscript_expression') {
-            this.emitArrayCompoundAssign(innerLeft, right, funcInfo, op);
+            this.emitArrayCompoundAssign(innerLeft, right, fn, op);
             return;
         }
 
         if (innerLeft.type === 'pointer_expression') {
-            this.emitPointerCompoundAssign(innerLeft, right, funcInfo, op);
+            this.emitPointerCompoundAssign(innerLeft, right, fn, op);
             return;
         }
 
@@ -2393,59 +3516,59 @@ class SC8P053Compiler {
             const uOp = this.getChildByField(innerLeft, 'operator');
             const uArg = innerLeft.childForFieldName('argument');
             if (uOp && uOp.text === '*' && uArg) {
-                this.emitPointerCompoundAssignUnary(uArg, right, funcInfo, op);
+                this.emitPointerCompoundAssignUnary(uArg, right, fn, op);
                 return;
             }
         }
 
-        const sym = this.resolveSymbol(left, funcInfo);
-        if (!sym) return;
+        const sym = this.resolveSymbol(left, fn);
+        if (!sym) throw new Error(`Cannot assign to '${left.text.trim()}' - not an lvalue`);
 
         if (['+=', '-=', '&=', '|=', '^='].includes(op)) {
-            this.emitLoadAccumulator(left, funcInfo);
+            this.emitLoadAccumulator(left, fn);
             const constVal = this.getConstantValue(right);
             switch (op) {
                 case '+=':
                     if (constVal !== null) this.asmLines.push(`ADDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ADDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ADDA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ADDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ADDA', t); } }
                     break;
                 case '-=':
                     if (constVal !== null) this.asmLines.push(`HSUBIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
                     else {
-                        const rsym = this.resolveSymbol(right, funcInfo);
+                        const rsym = this.resolveSymbol(right, fn);
                         if (rsym) { this.emitOpSym('HSUBA', rsym); }
                         else {
-                            this.emitLoadAccumulator(right, funcInfo);
+                            this.emitLoadAccumulator(right, fn);
                             const t = this.allocTemp();
                             this.emitLdAToTemp(t);
-                            this.emitLoadAccumulator(left, funcInfo);
+                            this.emitLoadAccumulator(left, fn);
                             this.emitOpTemp('HSUBA', t);
                         }
                     }
                     break;
                 case '&=':
                     if (constVal !== null) this.asmLines.push(`ANDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ANDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ANDA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ANDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ANDA', t); } }
                     break;
                 case '|=':
                     if (constVal !== null) this.asmLines.push(`ORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ORA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ORA', t); } }
                     break;
                 case '^=':
                     if (constVal !== null) this.asmLines.push(`XORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('XORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('XORA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('XORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('XORA', t); } }
                     break;
             }
             this.emitLdAToSym(sym);
         } else if (op === '<<=' || op === '>>=') {
-            this.emitShiftAssign(sym, left, right, funcInfo, op === '>>=');
+            this.emitShiftAssign(sym, right, fn, op === '>>=');
         } else if (op === '*=' || op === '/=' || op === '%=') {
-            this.emitArithAssign(sym, left, right, funcInfo, op);
+            this.emitArithAssign(sym, left, right, fn, op);
         }
     }
 
-    private emitArrayStore(arrayNode: Parser.SyntaxNode, valueNode: Parser.SyntaxNode, funcInfo: Fn) {
-        const arraySym = this.resolveArraySymbol(arrayNode, funcInfo);
+    private emitArrayStore(arrayNode: Parser.SyntaxNode, valueNode: Parser.SyntaxNode, fn: Fn) {
+        const arraySym = this.resolveArraySymbol(arrayNode, fn);
         let indexNode: Parser.SyntaxNode | null = arrayNode.childForFieldName('index');
         if (!indexNode) {
             for (let i = 0; i < arrayNode.childCount; i++) {
@@ -2460,18 +3583,18 @@ class SC8P053Compiler {
 
         const constIndex = this.getConstantValue(indexNode);
         if (constIndex !== null) {
-            this.emitLoadAccumulator(valueNode, funcInfo);
+            this.emitLoadAccumulator(valueNode, fn);
             this.emitLdAToArrayElem(arraySym, constIndex);
             return;
         }
 
         const t = this.allocTemp();
-        this.emitLoadAccumulator(valueNode, funcInfo);
+        this.emitLoadAccumulator(valueNode, fn);
         this.emitLdAToTemp(t);
-        this.emitLoadAccumulator(indexNode, funcInfo);
+        this.emitLoadAccumulator(indexNode, fn);
         const t2 = this.allocTemp();
         this.emitLdAToTemp(t2);
-        if (arraySym.isArray) {
+        if (arraySym.typeInfo.isArray) {
             this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
             this.emitOpTemp('ADDA', t2);
         } else {
@@ -2485,45 +3608,45 @@ class SC8P053Compiler {
         this.asmLines.push('LD INDF,A');
     }
 
-    private emitPointerCompoundAssign(left: Parser.SyntaxNode, right: Parser.SyntaxNode, funcInfo: Fn, op: string) {
+    private emitPointerCompoundAssign(left: Parser.SyntaxNode, right: Parser.SyntaxNode, fn: Fn, op: string) {
         const opNode = left.child(0);
         const argNode = left.child(1);
         if (!opNode || !argNode || opNode.text !== '*') return;
 
         if (['+=', '-=', '&=', '|=', '^='].includes(op)) {
-            this.emitLoadAccumulator(left, funcInfo);
+            this.emitLoadAccumulator(left, fn);
             const constVal = this.getConstantValue(right);
             switch (op) {
                 case '+=':
                     if (constVal !== null) this.asmLines.push(`ADDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ADDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ADDA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ADDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ADDA', t); } }
                     break;
                 case '-=':
                     if (constVal !== null) this.asmLines.push(`HSUBIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('HSUBA', rsym); else { this.emitLoadAccumulator(right, funcInfo); const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(left, funcInfo); this.emitOpTemp('HSUBA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('HSUBA', rsym); else { this.emitLoadAccumulator(right, fn); const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(left, fn); this.emitOpTemp('HSUBA', t); } }
                     break;
                 case '&=':
                     if (constVal !== null) this.asmLines.push(`ANDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ANDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ANDA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ANDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ANDA', t); } }
                     break;
                 case '|=':
                     if (constVal !== null) this.asmLines.push(`ORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ORA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ORA', t); } }
                     break;
                 case '^=':
                     if (constVal !== null) this.asmLines.push(`XORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('XORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('XORA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('XORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('XORA', t); } }
                     break;
             }
             const t = this.allocTemp();
             this.emitLdAToTemp(t);
-            this.emitLoadAccumulator(argNode, funcInfo);
+            this.emitLoadAccumulator(argNode, fn);
             this.emitIndirectSetFSR();
             this.emitLdTempToA(t);
             this.asmLines.push('LD INDF,A');
         } else if (op === '<<=' || op === '>>=') {
             const t0 = this.allocTemp();
-            this.emitLoadAccumulator(left, funcInfo);
+            this.emitLoadAccumulator(left, fn);
             this.emitLdAToTemp(t0);
             const shiftRight = op === '>>=';
             const shiftConst = this.getConstantValue(right);
@@ -2540,10 +3663,10 @@ class SC8P053Compiler {
                 }
             } else if (shiftConst === null) {
                 const t1 = this.allocTemp();
-                this.emitLoadAccumulator(right, funcInfo);
+                this.emitLoadAccumulator(right, fn);
                 this.emitLdAToTemp(t1);
-                const loopLabel = this.newLabel(funcInfo);
-                const doneLabel = this.newLabel(funcInfo);
+                const loopLabel = this.newLabel(fn);
+                const doneLabel = this.newLabel(fn);
                 this.emitLdTempToA(t1);
                 this.asmLines.push('HSUBIA 0x00');
                 this.asmLines.push('SZB STATUS,2');
@@ -2566,64 +3689,64 @@ class SC8P053Compiler {
                 this.asmLines.push(`JP ${loopLabel}`);
                 this.emitLabel(doneLabel);
             }
-            this.emitLoadAccumulator(argNode, funcInfo);
+            this.emitLoadAccumulator(argNode, fn);
             this.emitIndirectSetFSR();
             this.emitLdTempToA(t0);
             this.asmLines.push('LD INDF,A');
         } else if (op === '*=' || op === '/=' || op === '%=') {
-            this.emitLoadAccumulator(left, funcInfo);
+            this.emitLoadAccumulator(left, fn);
             const t0 = this.allocTemp();
             this.emitLdAToTemp(t0);
             if (op === '*=') {
-                this.emitMultiply(left, right, funcInfo);
+                this.emitMultiply(left, right, fn);
             } else if (op === '/=') {
-                this.emitDivide(left, right, funcInfo);
+                this.emitDivide(left, right, fn);
             } else {
-                this.emitModulo(left, right, funcInfo);
+                this.emitModulo(left, right, fn);
             }
             const tResult = this.allocTemp();
             this.emitLdAToTemp(tResult);
-            this.emitLoadAccumulator(argNode, funcInfo);
+            this.emitLoadAccumulator(argNode, fn);
             this.emitIndirectSetFSR();
             this.emitLdTempToA(tResult);
             this.asmLines.push('LD INDF,A');
         }
     }
 
-    private emitPointerCompoundAssignUnary(argNode: Parser.SyntaxNode, right: Parser.SyntaxNode, funcInfo: Fn, op: string) {
+    private emitPointerCompoundAssignUnary(argNode: Parser.SyntaxNode, right: Parser.SyntaxNode, fn: Fn, op: string) {
         if (['+=', '-=', '&=', '|=', '^='].includes(op)) {
-            this.emitLoadAccumulator(argNode, funcInfo);
+            this.emitLoadAccumulator(argNode, fn);
             this.emitIndirectSetFSR();
             this.asmLines.push('LD A,INDF');
             const constVal = this.getConstantValue(right);
             switch (op) {
                 case '+=':
                     if (constVal !== null) this.asmLines.push(`ADDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ADDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ADDA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ADDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ADDA', t); } }
                     break;
                 case '-=':
                     if (constVal !== null) this.asmLines.push(`HSUBIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('HSUBA', rsym); else { this.emitLoadAccumulator(right, funcInfo); const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(argNode, funcInfo); this.emitIndirectSetFSR(); this.asmLines.push('LD A,INDF'); this.emitOpTemp('HSUBA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('HSUBA', rsym); else { this.emitLoadAccumulator(right, fn); const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(argNode, fn); this.emitIndirectSetFSR(); this.asmLines.push('LD A,INDF'); this.emitOpTemp('HSUBA', t); } }
                     break;
                 case '&=':
                     if (constVal !== null) this.asmLines.push(`ANDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ANDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ANDA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ANDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ANDA', t); } }
                     break;
                 case '|=':
                     if (constVal !== null) this.asmLines.push(`ORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ORA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ORA', t); } }
                     break;
                 case '^=':
                     if (constVal !== null) this.asmLines.push(`XORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('XORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('XORA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('XORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('XORA', t); } }
                     break;
             }
             this.asmLines.push('LD INDF,A');
         }
     }
 
-    private emitArrayCompoundAssign(left: Parser.SyntaxNode, right: Parser.SyntaxNode, funcInfo: Fn, op: string) {
-        const arraySym = this.resolveArraySymbol(left, funcInfo);
+    private emitArrayCompoundAssign(left: Parser.SyntaxNode, right: Parser.SyntaxNode, fn: Fn, op: string) {
+        const arraySym = this.resolveArraySymbol(left, fn);
         let indexNode: Parser.SyntaxNode | null = left.childForFieldName('index');
         if (!indexNode) {
             for (let i = 0; i < left.childCount; i++) {
@@ -2638,34 +3761,34 @@ class SC8P053Compiler {
 
         const constIndex = this.getConstantValue(indexNode);
         const constVal = this.getConstantValue(right);
-        const isSigned = arraySym.type === 'i8';
+        const isSigned = arraySym.typeInfo.type === 'i8';
 
         if (['+=', '-=', '&=', '|=', '^='].includes(op)) {
             if (constIndex !== null) {
                 this.emitLdArrayElemToA(arraySym, constIndex);
             } else {
-                this.emitArrayLoad(left, funcInfo);
+                this.emitArrayLoad(left, fn);
             }
             switch (op) {
                 case '+=':
                     if (constVal !== null) this.asmLines.push(`ADDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ADDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ADDA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ADDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ADDA', t); } }
                     break;
                 case '-=':
                     if (constVal !== null) this.asmLines.push(`HSUBIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('HSUBA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('SUBA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('HSUBA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('SUBA', t); } }
                     break;
                 case '&=':
                     if (constVal !== null) this.asmLines.push(`ANDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ANDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ANDA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ANDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ANDA', t); } }
                     break;
                 case '|=':
                     if (constVal !== null) this.asmLines.push(`ORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('ORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('ORA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ORA', t); } }
                     break;
                 case '^=':
                     if (constVal !== null) this.asmLines.push(`XORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, funcInfo); if (rsym) this.emitOpSym('XORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, funcInfo); this.emitOpTemp('XORA', t); } }
+                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('XORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('XORA', t); } }
                     break;
             }
             if (constIndex !== null) {
@@ -2673,7 +3796,7 @@ class SC8P053Compiler {
             } else {
                 const t = this.allocTemp();
                 this.emitLdAToTemp(t);
-                this.emitLoadAccumulator(indexNode, funcInfo);
+                this.emitLoadAccumulator(indexNode, fn);
                 const t2 = this.allocTemp();
                 this.emitLdAToTemp(t2);
                 this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
@@ -2693,9 +3816,9 @@ class SC8P053Compiler {
                     const t0 = this.allocTemp();
                     this.emitLdAToTemp(t0);
                     if (shiftRight && isSigned && shiftConst > 0) {
-                        const negLabel = this.newLabel(funcInfo);
-                        const posLabel = this.newLabel(funcInfo);
-                        const endLabel = this.newLabel(funcInfo);
+                        const negLabel = this.newLabel(fn);
+                        const posLabel = this.newLabel(fn);
+                        const endLabel = this.newLabel(fn);
                         this.emitTestBitTemp('SNZB', t0, 7);
                         this.asmLines.push(`JP ${posLabel}`);
                         this.emitLabel(negLabel);
@@ -2729,11 +3852,11 @@ class SC8P053Compiler {
                 } else {
                     const t0 = this.allocTemp();
                     this.emitLdAToTemp(t0);
-                    this.emitLoadAccumulator(right, funcInfo);
+                    this.emitLoadAccumulator(right, fn);
                     const t1 = this.allocTemp();
                     this.emitLdAToTemp(t1);
-                    const loopLabel = this.newLabel(funcInfo);
-                    const doneLabel = this.newLabel(funcInfo);
+                    const loopLabel = this.newLabel(fn);
+                    const doneLabel = this.newLabel(fn);
                     this.emitLdTempToA(t1);
                     this.asmLines.push('HSUBIA 0x00');
                     this.asmLines.push('SZB STATUS,2');
@@ -2767,15 +3890,15 @@ class SC8P053Compiler {
                 }
                 this.emitLdAToArrayElem(arraySym, constIndex);
             } else {
-                this.emitArrayLoad(left, funcInfo);
+                this.emitArrayLoad(left, fn);
                 const t0 = this.allocTemp();
                 this.emitLdAToTemp(t0);
-                this.emitLoadAccumulator(right, funcInfo);
+                this.emitLoadAccumulator(right, fn);
                 const t1 = this.allocTemp();
                 this.emitLdAToTemp(t1);
                 const shiftRight = op === '>>=';
-                const loopLabel = this.newLabel(funcInfo);
-                const doneLabel = this.newLabel(funcInfo);
+                const loopLabel = this.newLabel(fn);
+                const doneLabel = this.newLabel(fn);
                 this.emitLdTempToA(t1);
                 this.asmLines.push('HSUBIA 0x00');
                 this.asmLines.push('SZB STATUS,2');
@@ -2808,7 +3931,7 @@ class SC8P053Compiler {
                 this.emitLdTempToA(t0);
                 const t3 = this.allocTemp();
                 this.emitLdAToTemp(t3);
-                this.emitLoadAccumulator(indexNode, funcInfo);
+                this.emitLoadAccumulator(indexNode, fn);
                 const t4 = this.allocTemp();
                 this.emitLdAToTemp(t4);
                 this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
@@ -2821,17 +3944,17 @@ class SC8P053Compiler {
             }
         } else if (op === '*=' || op === '/=' || op === '%=') {
             if (isSigned && (op === '/=' || op === '%=')) {
-                if (op === '/=') this.emitSignedDivide(left, right, funcInfo);
-                else this.emitSignedModulo(left, right, funcInfo);
+                if (op === '/=') this.emitSignedDivide(left, right, fn);
+                else this.emitSignedModulo(left, right, fn);
             } else {
                 if (constIndex !== null) {
                     this.emitLdArrayElemToA(arraySym, constIndex);
                 } else {
-                    this.emitArrayLoad(left, funcInfo);
+                    this.emitArrayLoad(left, fn);
                 }
                 const t0 = this.allocTemp();
                 this.emitLdAToTemp(t0);
-                this.emitLoadAccumulator(right, funcInfo);
+                this.emitLoadAccumulator(right, fn);
                 const t1 = this.allocTemp();
                 this.emitLdAToTemp(t1);
 
@@ -2839,8 +3962,8 @@ class SC8P053Compiler {
                     this.asmLines.push('CLRA');
                     const t2 = this.allocTemp();
                     this.emitLdAToTemp(t2);
-                    const loop = this.newLabel(funcInfo);
-                    const done = this.newLabel(funcInfo);
+                    const loop = this.newLabel(fn);
+                    const done = this.newLabel(fn);
                     this.emitLabel(loop);
                     this.emitLdTempToA(t0);
                     this.asmLines.push('HSUBIA 0x00');
@@ -2859,9 +3982,9 @@ class SC8P053Compiler {
                     this.asmLines.push('CLRA');
                     const t2 = this.allocTemp();
                     this.emitLdAToTemp(t2);
-                    const skipLabel = this.newLabel(funcInfo);
-                    const loop = this.newLabel(funcInfo);
-                    const done = this.newLabel(funcInfo);
+                    const skipLabel = this.newLabel(fn);
+                    const loop = this.newLabel(fn);
+                    const done = this.newLabel(fn);
                     this.emitLdTempToA(t1);
                     this.asmLines.push('HSUBIA 0x00');
                     this.asmLines.push('SZB STATUS,2');
@@ -2880,9 +4003,9 @@ class SC8P053Compiler {
                     this.emitLabel(skipLabel);
                     this.emitLdTempToA(t2);
                 } else {
-                    const skipLabel = this.newLabel(funcInfo);
-                    const loop = this.newLabel(funcInfo);
-                    const done = this.newLabel(funcInfo);
+                    const skipLabel = this.newLabel(fn);
+                    const loop = this.newLabel(fn);
+                    const done = this.newLabel(fn);
                     this.emitLdTempToA(t1);
                     this.asmLines.push('HSUBIA 0x00');
                     this.asmLines.push('SZB STATUS,2');
@@ -2904,7 +4027,7 @@ class SC8P053Compiler {
                 } else {
                     const t3 = this.allocTemp();
                     this.emitLdAToTemp(t3);
-                    this.emitLoadAccumulator(indexNode, funcInfo);
+                    this.emitLoadAccumulator(indexNode, fn);
                     const t4 = this.allocTemp();
                     this.emitLdAToTemp(t4);
                     this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
@@ -2922,7 +4045,7 @@ class SC8P053Compiler {
                 } else {
                     const t3 = this.allocTemp();
                     this.emitLdAToTemp(t3);
-                    this.emitLoadAccumulator(indexNode, funcInfo);
+                    this.emitLoadAccumulator(indexNode, fn);
                     const t4 = this.allocTemp();
                     this.emitLdAToTemp(t4);
                     this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
@@ -2937,7 +4060,7 @@ class SC8P053Compiler {
         }
     }
 
-    private emitCallExpression(node: Parser.SyntaxNode, funcInfo: Fn, usedAsValue: boolean = false) {
+    private emitCallExpression(node: Parser.SyntaxNode, fn: Fn, usedAsValue: boolean = false) {
         const funcNode = node.childForFieldName('function');
         const argsNode = node.childForFieldName('arguments');
         if (!funcNode) return;
@@ -2967,7 +4090,7 @@ class SC8P053Compiler {
             }
             const temps: number[] = [];
             for (let i = 0; i < args.length && i < targetFunc.params.length; i++) {
-                this.emitLoadAccumulator(args[i], funcInfo);
+                this.emitLoadAccumulator(args[i], fn);
                 const t = this.allocTemp();
                 this.emitLdAToTemp(t);
                 temps.push(t);
@@ -2981,13 +4104,13 @@ class SC8P053Compiler {
             }
         }
 
-        if (targetFunc) funcInfo.calls.add(funcName);
+        if (targetFunc) fn.calls.add(funcName);
 
         this.asmLines.push(`CALL ${toAsmName(funcName)}`);
         this.invalidateBankState();
     }
 
-    private emitUpdateExpression(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitUpdateExpression(node: Parser.SyntaxNode, fn: Fn) {
         const operator = this.getChildByField(node, 'operator');
         let argument = node.childForFieldName('argument');
         if (!operator || !argument) return;
@@ -3000,7 +4123,7 @@ class SC8P053Compiler {
             const opNode = unwrappedArg.child(0);
             const argNode = unwrappedArg.child(1);
             if (opNode && opNode.text === '*' && argNode) {
-                const ptrSym = this.resolveSymbol(argNode, funcInfo);
+                const ptrSym = this.resolveSymbol(argNode, fn);
                 if (!ptrSym) return;
 
                 const isParenWrapped = argument.type === 'parenthesized_expression';
@@ -3069,7 +4192,7 @@ class SC8P053Compiler {
         }
 
         if (argument.type === 'subscript_expression') {
-            const arraySym = this.resolveArraySymbol(argument, funcInfo);
+            const arraySym = this.resolveArraySymbol(argument, fn);
             let indexNode: Parser.SyntaxNode | null = argument.childForFieldName('index');
             if (!indexNode) {
                 for (let i = 0; i < argument.childCount; i++) {
@@ -3099,13 +4222,13 @@ class SC8P053Compiler {
                         this.emitLdTempToA(t);
                     }
                 } else {
-                    this.emitArrayLoad(argument, funcInfo);
+                    this.emitArrayLoad(argument, fn);
                     const t = this.allocTemp();
                     this.emitLdAToTemp(t);
                     this.asmLines.push('ADDIA 0x01');
                     const t2 = this.allocTemp();
                     this.emitLdAToTemp(t2);
-                    this.emitLoadAccumulator(indexNode, funcInfo);
+                    this.emitLoadAccumulator(indexNode, fn);
                     const t3 = this.allocTemp();
                     this.emitLdAToTemp(t3);
                     this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
@@ -3134,13 +4257,13 @@ class SC8P053Compiler {
                         this.emitLdTempToA(t);
                     }
                 } else {
-                    this.emitArrayLoad(argument, funcInfo);
+                    this.emitArrayLoad(argument, fn);
                     const t = this.allocTemp();
                     this.emitLdAToTemp(t);
                     this.asmLines.push('HSUBIA 0x01');
                     const t2 = this.allocTemp();
                     this.emitLdAToTemp(t2);
-                    this.emitLoadAccumulator(indexNode, funcInfo);
+                    this.emitLoadAccumulator(indexNode, fn);
                     const t3 = this.allocTemp();
                     this.emitLdAToTemp(t3);
                     this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
@@ -3158,8 +4281,13 @@ class SC8P053Compiler {
             return;
         }
 
-        const sym = this.resolveSymbol(argument, funcInfo);
-        if (!sym) return;
+        const sym = this.resolveSymbol(argument, fn);
+        if (!sym) {
+            if (!this.isValidLvalue(argument, fn)) {
+                throw new Error(`Cannot increment/decrement '${argument.text.trim()}' - not an lvalue`);
+            }
+            return;
+        }
 
         if (operator.text === '++') {
             if (isPrefix) {
@@ -3194,24 +4322,24 @@ class SC8P053Compiler {
         }
     }
 
-    private emitConditionalExpression(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitConditionalExpression(node: Parser.SyntaxNode, fn: Fn) {
         const condition = node.childForFieldName('condition');
         const consequence = node.childForFieldName('consequence');
         const alternative = node.childForFieldName('alternative');
         if (!condition || !consequence || !alternative) return;
 
-        const elseLabel = this.newLabel(funcInfo);
-        const endLabel = this.newLabel(funcInfo);
+        const elseLabel = this.newLabel(fn);
+        const endLabel = this.newLabel(fn);
 
-        this.emitCondition(condition, funcInfo, elseLabel, false);
-        this.emitLoadAccumulator(consequence, funcInfo);
+        this.emitCondition(condition, fn, elseLabel, false);
+        this.emitLoadAccumulator(consequence, fn);
         this.asmLines.push(`JP ${endLabel}`);
         this.emitLabel(elseLabel);
-        this.emitLoadAccumulator(alternative, funcInfo);
+        this.emitLoadAccumulator(alternative, fn);
         this.emitLabel(endLabel);
     }
 
-    private emitAssignmentAsValue(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitAssignmentAsValue(node: Parser.SyntaxNode, fn: Fn) {
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
         const operator = this.getChildByField(node, 'operator');
@@ -3221,16 +4349,16 @@ class SC8P053Compiler {
         const innerLeft = this.unwrapParentheses(left);
         if (op === '=') {
             if (innerLeft.type === 'subscript_expression') {
-                this.emitArrayStore(innerLeft, right, funcInfo);
-                this.emitArrayLoad(innerLeft, funcInfo);
+                this.emitArrayStore(innerLeft, right, fn);
+                this.emitArrayLoad(innerLeft, fn);
             } else if (innerLeft.type === 'pointer_expression') {
                 const opNode = innerLeft.child(0);
                 const argNode = innerLeft.child(1);
                 if (opNode && opNode.text === '*' && argNode) {
-                    this.emitLoadAccumulator(right, funcInfo);
+                    this.emitLoadAccumulator(right, fn);
                     const t = this.allocTemp();
                     this.emitLdAToTemp(t);
-                    this.emitLoadAccumulator(argNode, funcInfo);
+                    this.emitLoadAccumulator(argNode, fn);
                     this.emitIndirectSetFSR();
                     this.emitLdTempToA(t);
                     this.asmLines.push('LD INDF,A');
@@ -3239,44 +4367,44 @@ class SC8P053Compiler {
                 const uOp = this.getChildByField(innerLeft, 'operator');
                 const uArg = innerLeft.childForFieldName('argument');
                 if (uOp && uOp.text === '*' && uArg) {
-                    this.emitLoadAccumulator(right, funcInfo);
+                    this.emitLoadAccumulator(right, fn);
                     const t = this.allocTemp();
                     this.emitLdAToTemp(t);
-                    this.emitLoadAccumulator(uArg, funcInfo);
+                    this.emitLoadAccumulator(uArg, fn);
                     this.emitIndirectSetFSR();
                     this.emitLdTempToA(t);
                     this.asmLines.push('LD INDF,A');
                 }
             } else {
-                this.emitLoadAccumulator(right, funcInfo);
-                const sym = this.resolveSymbol(left, funcInfo);
+                this.emitLoadAccumulator(right, fn);
+                const sym = this.resolveSymbol(left, fn);
                 if (sym) this.emitLdAToSym(sym);
             }
         } else {
             if (innerLeft.type === 'subscript_expression') {
-                this.emitArrayCompoundAssign(innerLeft, right, funcInfo, op);
-                this.emitArrayLoad(innerLeft, funcInfo);
+                this.emitArrayCompoundAssign(innerLeft, right, fn, op);
+                this.emitArrayLoad(innerLeft, fn);
             } else if (innerLeft.type === 'pointer_expression' || innerLeft.type === 'unary_expression') {
-                this.emitAssignment(node, funcInfo);
-                this.emitLoadAccumulator(innerLeft, funcInfo);
+                this.emitAssignment(node, fn);
+                this.emitLoadAccumulator(innerLeft, fn);
             } else {
-                this.emitAssignment(node, funcInfo);
-                const sym = this.resolveSymbol(left, funcInfo);
+                this.emitAssignment(node, fn);
+                const sym = this.resolveSymbol(left, fn);
                 if (sym) this.emitLdSymToA(sym);
             }
         }
     }
 
-    private emitCommaExpression(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitCommaExpression(node: Parser.SyntaxNode, fn: Fn) {
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
         if (!left || !right) return;
 
-        this.emitExpression(left, funcInfo);
-        this.emitLoadAccumulator(right, funcInfo);
+        this.emitExpression(left, fn);
+        this.emitLoadAccumulator(right, fn);
     }
 
-    private emitLoadAccumulator(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitLoadAccumulator(node: Parser.SyntaxNode, fn: Fn) {
         const inner = this.unwrapParentheses(node);
 
         if (inner.type === 'number_literal') {
@@ -3293,9 +4421,9 @@ class SC8P053Compiler {
         }
 
         if (inner.type === 'identifier') {
-            const sym = this.resolveSymbol(inner, funcInfo);
+            const sym = this.resolveSymbol(inner, fn);
             if (sym) {
-                if (sym.isArray) {
+                if (sym.typeInfo.isArray) {
                     this.asmLines.push(`LDIA 0x${(sym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
                 } else {
                     this.emitLdSymToA(sym);
@@ -3310,28 +4438,28 @@ class SC8P053Compiler {
         }
 
         if (inner.type === 'subscript_expression') {
-            this.emitArrayLoad(inner, funcInfo);
+            this.emitArrayLoad(inner, fn);
             return;
         }
 
         if (inner.type === 'binary_expression') {
-            this.emitBinaryExpression(inner, funcInfo);
+            this.emitBinaryExpression(inner, fn);
             return;
         }
 
         if (inner.type === 'unary_expression') {
-            this.emitUnaryExpression(inner, funcInfo);
+            this.emitUnaryExpression(inner, fn);
             return;
         }
 
         if (inner.type === 'call_expression') {
-            this.emitCallExpression(inner, funcInfo, true);
+            this.emitCallExpression(inner, fn, true);
             return;
         }
 
         if (inner.type === 'cast_expression') {
             const value = inner.childForFieldName('value');
-            if (value) this.emitLoadAccumulator(value, funcInfo);
+            if (value) this.emitLoadAccumulator(value, fn);
             return;
         }
 
@@ -3339,9 +4467,9 @@ class SC8P053Compiler {
             let sizeofArg = inner.child(1);
             if (sizeofArg) {
                 sizeofArg = this.unwrapParentheses(sizeofArg);
-                const sym = this.resolveSymbol(sizeofArg, funcInfo);
-                if (sym && sym.isArray) {
-                    this.asmLines.push(`LDIA 0x${sym.arraySize.toString(16).toUpperCase().padStart(2, '0')}`);
+                const sym = this.resolveSymbol(sizeofArg, fn);
+                if (sym && sym.typeInfo.isArray) {
+                    this.asmLines.push(`LDIA 0x${sym.typeInfo.arraySize.toString(16).toUpperCase().padStart(2, '0')}`);
                     return;
                 }
             }
@@ -3360,22 +4488,22 @@ class SC8P053Compiler {
         }
 
         if (inner.type === 'update_expression') {
-            this.emitUpdateExpression(inner, funcInfo);
+            this.emitUpdateExpression(inner, fn);
             return;
         }
 
         if (inner.type === 'conditional_expression') {
-            this.emitConditionalExpression(inner, funcInfo);
+            this.emitConditionalExpression(inner, fn);
             return;
         }
 
         if (inner.type === 'comma_expression') {
-            this.emitCommaExpression(inner, funcInfo);
+            this.emitCommaExpression(inner, fn);
             return;
         }
 
         if (inner.type === 'assignment_expression') {
-            this.emitAssignmentAsValue(inner, funcInfo);
+            this.emitAssignmentAsValue(inner, fn);
             return;
         }
 
@@ -3392,29 +4520,27 @@ class SC8P053Compiler {
             const argNode = inner.child(1);
             if (opNode && argNode) {
                 if (opNode.text === '&') {
-                    // 处理 &x, &arr[0] 等取地址操作
                     if (argNode.type === 'identifier') {
-                        const sym = this.resolveSymbol(argNode, funcInfo);
+                        const sym = this.resolveSymbol(argNode, fn);
                         if (sym) {
                             this.asmLines.push(`LDIA 0x${(sym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                        } else {
+                            throw new Error(`Cannot take address of '${argNode.text.trim()}' - not a variable`);
                         }
                         return;
                     } else if (argNode.type === 'subscript_expression') {
-                        // 处理 &arr[index]
-                        const arraySym = this.resolveArraySymbol(argNode, funcInfo);
-                        if (!arraySym) return;
+                        const arraySym = this.resolveArraySymbol(argNode, fn);
+                        if (!arraySym) throw new Error(`Cannot take address of '${argNode.text.trim()}' - not an array element`);
 
                         const indexNode = argNode.childForFieldName('index');
                         if (!indexNode) return;
 
                         const constIndex = this.getConstantValue(indexNode);
                         if (constIndex !== null) {
-                            // &arr[constant]
                             const addr = (arraySym.ramAddr + constIndex) & 0xFF;
                             this.asmLines.push(`LDIA 0x${addr.toString(16).toUpperCase().padStart(2, '0')}`);
                         } else {
-                            // &arr[variable]
-                            this.emitLoadAccumulator(indexNode, funcInfo);
+                            this.emitLoadAccumulator(indexNode, fn);
                             const t = this.allocTemp();
                             this.emitLdAToTemp(t);
                             this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
@@ -3422,17 +4548,16 @@ class SC8P053Compiler {
                         }
                         return;
                     }
-                    return;
+                    throw new Error(`Cannot take address of '${argNode.text.trim()}' - not an lvalue`);
                 }
                 if (opNode.text === '*') {
-                    // 处理 *ptr++、*++ptr、*ptr--、*--ptr
                     if (argNode.type === 'update_expression') {
                         const updateOp = this.getChildByField(argNode, 'operator');
                         const updateArg = argNode.childForFieldName('argument');
                         if (updateOp && updateArg) {
-                            const ptrSym = this.resolveSymbol(updateArg, funcInfo);
+                            const ptrSym = this.resolveSymbol(updateArg, fn);
                             if (!ptrSym) {
-                                this.emitLoadAccumulator(argNode, funcInfo);
+                                this.emitLoadAccumulator(argNode, fn);
                                 this.emitIndirectRead();
                                 return;
                             }
@@ -3477,7 +4602,7 @@ class SC8P053Compiler {
                         }
                     }
                     // 普通的 *ptr 解引用
-                    this.emitLoadAccumulator(argNode, funcInfo);
+                    this.emitLoadAccumulator(argNode, fn);
 
                     // 检查是否是常量地址（如 (u8 *)0x06）
                     const addr = this.extractAddr(argNode);
@@ -3505,7 +4630,7 @@ class SC8P053Compiler {
         }
     }
 
-    private emitBinaryExpression(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitBinaryExpression(node: Parser.SyntaxNode, fn: Fn) {
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
         const operator = this.getChildByField(node, 'operator');
@@ -3516,127 +4641,127 @@ class SC8P053Compiler {
 
         switch (op) {
             case '+':
-                this.emitLoadAccumulator(left, funcInfo);
+                this.emitLoadAccumulator(left, fn);
                 if (rightConst !== null) {
                     this.asmLines.push(`ADDIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`);
                 } else {
-                    const rsym = this.resolveSymbol(right, funcInfo);
+                    const rsym = this.resolveSymbol(right, fn);
                     if (rsym) {
                         this.emitOpSym('ADDA', rsym);
                     } else {
                         const t = this.allocTemp();
                         this.emitLdAToTemp(t);
-                        this.emitLoadAccumulator(right, funcInfo);
+                        this.emitLoadAccumulator(right, fn);
                         this.emitOpTemp('ADDA', t);
                     }
                 }
                 break;
             case '-':
                 if (rightConst !== null) {
-                    this.emitLoadAccumulator(left, funcInfo);
+                    this.emitLoadAccumulator(left, fn);
                     this.asmLines.push(`HSUBIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`);
                 } else {
-                    const lsym = this.resolveSymbol(left, funcInfo);
-                    const rsym = this.resolveSymbol(right, funcInfo);
+                    const lsym = this.resolveSymbol(left, fn);
+                    const rsym = this.resolveSymbol(right, fn);
                     if (lsym && rsym) {
                         this.emitLdSymToA(rsym);
                         this.emitOpSym('SUBA', lsym);
                     } else if (rsym) {
-                        this.emitLoadAccumulator(left, funcInfo);
+                        this.emitLoadAccumulator(left, fn);
                         const t = this.allocTemp();
                         this.emitLdAToTemp(t);
                         this.emitLdSymToA(rsym);
                         this.emitOpTemp('SUBA', t);
                     } else if (lsym) {
-                        this.emitLoadAccumulator(right, funcInfo);
+                        this.emitLoadAccumulator(right, fn);
                         this.emitOpSym('SUBA', lsym);
                     } else {
-                        this.emitLoadAccumulator(left, funcInfo);
+                        this.emitLoadAccumulator(left, fn);
                         const t = this.allocTemp();
                         this.emitLdAToTemp(t);
-                        this.emitLoadAccumulator(right, funcInfo);
+                        this.emitLoadAccumulator(right, fn);
                         this.emitOpTemp('SUBA', t);
                     }
                 }
                 break;
             case '&':
-                this.emitLoadAccumulator(left, funcInfo);
+                this.emitLoadAccumulator(left, fn);
                 if (rightConst !== null) {
                     this.asmLines.push(`ANDIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`);
                 } else {
-                    const rsym = this.resolveSymbol(right, funcInfo);
+                    const rsym = this.resolveSymbol(right, fn);
                     if (rsym) {
                         this.emitOpSym('ANDA', rsym);
                     } else {
                         const t = this.allocTemp();
                         this.emitLdAToTemp(t);
-                        this.emitLoadAccumulator(right, funcInfo);
+                        this.emitLoadAccumulator(right, fn);
                         this.emitOpTemp('ANDA', t);
                     }
                 }
                 break;
             case '|':
-                this.emitLoadAccumulator(left, funcInfo);
+                this.emitLoadAccumulator(left, fn);
                 if (rightConst !== null) {
                     this.asmLines.push(`ORIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`);
                 } else {
-                    const rsym = this.resolveSymbol(right, funcInfo);
+                    const rsym = this.resolveSymbol(right, fn);
                     if (rsym) {
                         this.emitOpSym('ORA', rsym);
                     } else {
                         const t = this.allocTemp();
                         this.emitLdAToTemp(t);
-                        this.emitLoadAccumulator(right, funcInfo);
+                        this.emitLoadAccumulator(right, fn);
                         this.emitOpTemp('ORA', t);
                     }
                 }
                 break;
             case '^':
-                this.emitLoadAccumulator(left, funcInfo);
+                this.emitLoadAccumulator(left, fn);
                 if (rightConst !== null) {
                     this.asmLines.push(`XORIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`);
                 } else {
-                    const rsym = this.resolveSymbol(right, funcInfo);
+                    const rsym = this.resolveSymbol(right, fn);
                     if (rsym) {
                         this.emitOpSym('XORA', rsym);
                     } else {
                         const t = this.allocTemp();
                         this.emitLdAToTemp(t);
-                        this.emitLoadAccumulator(right, funcInfo);
+                        this.emitLoadAccumulator(right, fn);
                         this.emitOpTemp('XORA', t);
                     }
                 }
                 break;
-            case '*': this.emitMultiply(left, right, funcInfo); break;
+            case '*': this.emitMultiply(left, right, fn); break;
             case '/': {
-                const isSigned = this.inferExprType(left, funcInfo) === 'i8' || this.inferExprType(right, funcInfo) === 'i8';
-                if (isSigned) this.emitSignedDivide(left, right, funcInfo);
-                else this.emitDivide(left, right, funcInfo);
+                const isSigned = this.inferExprType(left, fn) === 'i8' || this.inferExprType(right, fn) === 'i8';
+                if (isSigned) this.emitSignedDivide(left, right, fn);
+                else this.emitDivide(left, right, fn);
                 break;
             }
             case '%': {
-                const isSigned = this.inferExprType(left, funcInfo) === 'i8' || this.inferExprType(right, funcInfo) === 'i8';
-                if (isSigned) this.emitSignedModulo(left, right, funcInfo);
-                else this.emitModulo(left, right, funcInfo);
+                const isSigned = this.inferExprType(left, fn) === 'i8' || this.inferExprType(right, fn) === 'i8';
+                if (isSigned) this.emitSignedModulo(left, right, fn);
+                else this.emitModulo(left, right, fn);
                 break;
             }
-            case '<<': this.emitShiftLeft(left, right, funcInfo); break;
+            case '<<': this.emitShiftLeft(left, right, fn); break;
             case '>>': {
-                const isSigned = this.inferExprType(left, funcInfo) === 'i8';
-                this.emitShiftRight(left, right, funcInfo, isSigned);
+                const isSigned = this.inferExprType(left, fn) === 'i8';
+                this.emitShiftRight(left, right, fn, isSigned);
                 break;
             }
             case '&&':
             case '||':
-                this.emitLogicalBinary(node, funcInfo);
+                this.emitLogicalBinary(node, fn);
                 break;
             case '==': case '!=': case '<': case '>': case '<=': case '>=':
-                this.emitComparisonResult(node, funcInfo);
+                this.emitComparisonResult(node, fn);
                 break;
         }
     }
 
-    private emitLogicalBinary(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitLogicalBinary(node: Parser.SyntaxNode, fn: Fn) {
         const operator = this.getChildByField(node, 'operator');
         if (!operator) return;
 
@@ -3644,21 +4769,21 @@ class SC8P053Compiler {
         const right = node.childForFieldName('right');
         if (!left || !right) return;
 
-        const setOne = this.newLabel(funcInfo);
-        const setZero = this.newLabel(funcInfo);
-        const done = this.newLabel(funcInfo);
+        const setOne = this.newLabel(fn);
+        const setZero = this.newLabel(fn);
+        const done = this.newLabel(fn);
 
         if (operator.text === '&&') {
-            this.emitCondition(left, funcInfo, setZero, false);
-            this.emitCondition(right, funcInfo, setZero, false);
+            this.emitCondition(left, fn, setZero, false);
+            this.emitCondition(right, fn, setZero, false);
             this.asmLines.push('LDIA 0x01');
             this.asmLines.push(`JP ${done}`);
             this.emitLabel(setZero);
             this.asmLines.push('LDIA 0x00');
             this.asmLines.push(`JP ${done}`);
         } else {
-            this.emitCondition(left, funcInfo, setOne, true);
-            this.emitCondition(right, funcInfo, setOne, true);
+            this.emitCondition(left, fn, setOne, true);
+            this.emitCondition(right, fn, setOne, true);
             this.asmLines.push('LDIA 0x00');
             this.asmLines.push(`JP ${done}`);
             this.emitLabel(setOne);
@@ -3667,10 +4792,10 @@ class SC8P053Compiler {
         this.emitLabel(done);
     }
 
-    private emitComparisonResult(node: Parser.SyntaxNode, funcInfo: Fn) {
-        const setOne = this.newLabel(funcInfo);
-        const done = this.newLabel(funcInfo);
-        this.emitComparison(node, funcInfo, setOne, true);
+    private emitComparisonResult(node: Parser.SyntaxNode, fn: Fn) {
+        const setOne = this.newLabel(fn);
+        const done = this.newLabel(fn);
+        this.emitComparison(node, fn, setOne, true);
         this.asmLines.push('LDIA 0x00');
         this.asmLines.push(`JP ${done}`);
         this.emitLabel(setOne);
@@ -3678,7 +4803,7 @@ class SC8P053Compiler {
         this.emitLabel(done);
     }
 
-    private emitUnaryExpression(node: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitUnaryExpression(node: Parser.SyntaxNode, fn: Fn) {
         const operator = this.getChildByField(node, 'operator');
         const argument = node.childForFieldName('argument');
         if (!operator || !argument) return;
@@ -3686,23 +4811,23 @@ class SC8P053Compiler {
         const op = operator.text;
 
         if (op === '-') {
-            this.emitLoadAccumulator(argument, funcInfo);
+            this.emitLoadAccumulator(argument, fn);
             this.asmLines.push('XORIA 0xFF');
             this.asmLines.push('ADDIA 0x01');
             return;
         }
 
         if (op === '~') {
-            this.emitLoadAccumulator(argument, funcInfo);
+            this.emitLoadAccumulator(argument, fn);
             this.asmLines.push('XORIA 0xFF');
             return;
         }
 
         if (op === '!') {
-            this.emitLoadAccumulator(argument, funcInfo);
+            this.emitLoadAccumulator(argument, fn);
             this.asmLines.push('HSUBIA 0x00');
-            const setOne = this.newLabel(funcInfo);
-            const done = this.newLabel(funcInfo);
+            const setOne = this.newLabel(fn);
+            const done = this.newLabel(fn);
             this.asmLines.push('SZB STATUS,2');
             this.asmLines.push(`JP ${setOne}`);
             this.asmLines.push('LDIA 0x00');
@@ -3714,7 +4839,7 @@ class SC8P053Compiler {
         }
 
         if (op === '&') {
-            const sym = this.resolveSymbol(argument, funcInfo);
+            const sym = this.resolveSymbol(argument, fn);
             if (sym) {
                 this.asmLines.push(`LDIA 0x${(sym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
             }
@@ -3722,16 +4847,16 @@ class SC8P053Compiler {
         }
 
         if (op === '*') {
-            this.emitLoadAccumulator(argument, funcInfo);
+            this.emitLoadAccumulator(argument, fn);
             this.emitIndirectRead();
             return;
         }
 
-        this.emitLoadAccumulator(argument, funcInfo);
+        this.emitLoadAccumulator(argument, fn);
     }
 
-    private emitArrayLoad(node: Parser.SyntaxNode, funcInfo: Fn) {
-        const arraySym = this.resolveArraySymbol(node, funcInfo);
+    private emitArrayLoad(node: Parser.SyntaxNode, fn: Fn) {
+        const arraySym = this.resolveArraySymbol(node, fn);
         let indexNode: Parser.SyntaxNode | null = node.childForFieldName('index');
         if (!indexNode) {
             for (let i = 0; i < node.childCount; i++) {
@@ -3751,9 +4876,9 @@ class SC8P053Compiler {
         }
 
         const t = this.allocTemp();
-        this.emitLoadAccumulator(indexNode, funcInfo);
+        this.emitLoadAccumulator(indexNode, fn);
         this.emitLdAToTemp(t);
-        if (arraySym.isArray) {
+        if (arraySym.typeInfo.isArray) {
             this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
             this.emitOpTemp('ADDA', t);
         } else {
@@ -3763,7 +4888,7 @@ class SC8P053Compiler {
         this.emitIndirectRead();
     }
 
-    private emitMultiply(left: Parser.SyntaxNode, right: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitMultiply(left: Parser.SyntaxNode, right: Parser.SyntaxNode, fn: Fn) {
         const rightConst = this.getConstantValue(right);
         const leftConst = this.getConstantValue(left);
 
@@ -3773,17 +4898,17 @@ class SC8P053Compiler {
         }
 
         if (rightConst === 1) {
-            this.emitLoadAccumulator(left, funcInfo);
+            this.emitLoadAccumulator(left, fn);
             return;
         }
         if (leftConst === 1) {
-            this.emitLoadAccumulator(right, funcInfo);
+            this.emitLoadAccumulator(right, fn);
             return;
         }
 
         if (rightConst === 2 || leftConst === 2) {
             const src = rightConst === 2 ? left : right;
-            this.emitLoadAccumulator(src, funcInfo);
+            this.emitLoadAccumulator(src, fn);
             const t0 = this.allocTemp();
             this.emitLdAToTemp(t0);
             this.emitLdTempToA(t0);
@@ -3791,18 +4916,18 @@ class SC8P053Compiler {
             return;
         }
 
-        this.emitLoadAccumulator(left, funcInfo);
+        this.emitLoadAccumulator(left, fn);
         const t0 = this.allocTemp();
         this.emitLdAToTemp(t0);
-        this.emitLoadAccumulator(right, funcInfo);
+        this.emitLoadAccumulator(right, fn);
         const t1 = this.allocTemp();
         this.emitLdAToTemp(t1);
         this.asmLines.push('CLRA');
         const t2 = this.allocTemp();
         this.emitLdAToTemp(t2);
 
-        const loop = this.newLabel(funcInfo);
-        const done = this.newLabel(funcInfo);
+        const loop = this.newLabel(fn);
+        const done = this.newLabel(fn);
         this.emitLabel(loop);
         this.emitLdTempToA(t0);
         this.asmLines.push('HSUBIA 0x00');
@@ -3819,7 +4944,7 @@ class SC8P053Compiler {
         this.emitLdTempToA(t2);
     }
 
-    private emitDivide(left: Parser.SyntaxNode, right: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitDivide(left: Parser.SyntaxNode, right: Parser.SyntaxNode, fn: Fn) {
         const rightConst = this.getConstantValue(right);
         const leftConst = this.getConstantValue(left);
         if (rightConst !== null && rightConst === 0) {
@@ -3830,7 +4955,7 @@ class SC8P053Compiler {
             return;
         }
         if (rightConst === 2) {
-            this.emitLoadAccumulator(left, funcInfo);
+            this.emitLoadAccumulator(left, fn);
             const t0 = this.allocTemp();
             this.emitLdAToTemp(t0);
             this.asmLines.push('CLRB STATUS,0');
@@ -3838,25 +4963,25 @@ class SC8P053Compiler {
             return;
         }
         if (rightConst !== null && rightConst === 1) {
-            this.emitLoadAccumulator(left, funcInfo);
+            this.emitLoadAccumulator(left, fn);
             return;
         }
 
-        this.emitLoadAccumulator(left, funcInfo);
+        this.emitLoadAccumulator(left, fn);
         const t0 = this.allocTemp();
         this.emitLdAToTemp(t0);
-        this.emitLoadAccumulator(right, funcInfo);
+        this.emitLoadAccumulator(right, fn);
         const t1 = this.allocTemp();
         this.emitLdAToTemp(t1);
         this.asmLines.push('CLRA');
         const t2 = this.allocTemp();
         this.emitLdAToTemp(t2);
 
-        const skipLabel = this.newLabel(funcInfo);
-        const zeroLabel = this.newLabel(funcInfo);
-        const endLabel = this.newLabel(funcInfo);
-        const loop = this.newLabel(funcInfo);
-        const done = this.newLabel(funcInfo);
+        const skipLabel = this.newLabel(fn);
+        const zeroLabel = this.newLabel(fn);
+        const endLabel = this.newLabel(fn);
+        const loop = this.newLabel(fn);
+        const done = this.newLabel(fn);
         this.emitLdTempToA(t1);
         this.asmLines.push('HSUBIA 0x00');
         this.asmLines.push('SZB STATUS,2');
@@ -3886,7 +5011,7 @@ class SC8P053Compiler {
         this.emitLabel(endLabel);
     }
 
-    private emitModulo(left: Parser.SyntaxNode, right: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitModulo(left: Parser.SyntaxNode, right: Parser.SyntaxNode, fn: Fn) {
         const rightConst = this.getConstantValue(right);
         const leftConst = this.getConstantValue(left);
         if (rightConst !== null && rightConst === 0) {
@@ -3901,16 +5026,16 @@ class SC8P053Compiler {
             return;
         }
 
-        this.emitLoadAccumulator(left, funcInfo);
+        this.emitLoadAccumulator(left, fn);
         const t0 = this.allocTemp();
         this.emitLdAToTemp(t0);
-        this.emitLoadAccumulator(right, funcInfo);
+        this.emitLoadAccumulator(right, fn);
         const t1 = this.allocTemp();
         this.emitLdAToTemp(t1);
 
-        const skipLabel = this.newLabel(funcInfo);
-        const loop = this.newLabel(funcInfo);
-        const done = this.newLabel(funcInfo);
+        const skipLabel = this.newLabel(fn);
+        const loop = this.newLabel(fn);
+        const done = this.newLabel(fn);
         this.emitLdTempToA(t1);
         this.asmLines.push('HSUBIA 0x00');
         this.asmLines.push('SZB STATUS,2');
@@ -3927,7 +5052,7 @@ class SC8P053Compiler {
         this.emitLdTempToA(t0);
     }
 
-    private emitSignedDivide(left: Parser.SyntaxNode, right: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitSignedDivide(left: Parser.SyntaxNode, right: Parser.SyntaxNode, fn: Fn) {
         const rightConst = this.getConstantValue(right);
         const leftConst = this.getConstantValue(left);
         if (rightConst !== null && rightConst === 0) {
@@ -3938,7 +5063,7 @@ class SC8P053Compiler {
             return;
         }
         if (rightConst !== null && rightConst === 1) {
-            this.emitLoadAccumulator(left, funcInfo);
+            this.emitLoadAccumulator(left, fn);
             return;
         }
 
@@ -3946,11 +5071,11 @@ class SC8P053Compiler {
         this.asmLines.push('LDIA 0x00');
         this.emitLdAToTemp(signResult);
 
-        this.emitLoadAccumulator(left, funcInfo);
+        this.emitLoadAccumulator(left, fn);
         const tLeft = this.allocTemp();
         this.emitLdAToTemp(tLeft);
 
-        const leftDoneLabel = this.newLabel(funcInfo);
+        const leftDoneLabel = this.newLabel(fn);
         this.emitTestBitTemp('SNZB', tLeft, 7);
         this.asmLines.push(`JP ${leftDoneLabel}`);
         this.emitLdTempToA(tLeft);
@@ -3961,11 +5086,11 @@ class SC8P053Compiler {
         this.emitLdAToTemp(signResult);
         this.emitLabel(leftDoneLabel);
 
-        this.emitLoadAccumulator(right, funcInfo);
+        this.emitLoadAccumulator(right, fn);
         const tRight = this.allocTemp();
         this.emitLdAToTemp(tRight);
 
-        const rightDoneLabel = this.newLabel(funcInfo);
+        const rightDoneLabel = this.newLabel(fn);
         this.emitTestBitTemp('SNZB', tRight, 7);
         this.asmLines.push(`JP ${rightDoneLabel}`);
         this.emitLdTempToA(tRight);
@@ -3981,11 +5106,11 @@ class SC8P053Compiler {
         const t2 = this.allocTemp();
         this.emitLdAToTemp(t2);
 
-        const skipLabel = this.newLabel(funcInfo);
-        const zeroLabel = this.newLabel(funcInfo);
-        const endLabel = this.newLabel(funcInfo);
-        const loop = this.newLabel(funcInfo);
-        const done = this.newLabel(funcInfo);
+        const skipLabel = this.newLabel(fn);
+        const zeroLabel = this.newLabel(fn);
+        const endLabel = this.newLabel(fn);
+        const loop = this.newLabel(fn);
+        const done = this.newLabel(fn);
         this.emitLdTempToA(tRight);
         this.asmLines.push('HSUBIA 0x00');
         this.asmLines.push('SZB STATUS,2');
@@ -4014,8 +5139,8 @@ class SC8P053Compiler {
         this.asmLines.push('LDIA 0x00');
         this.emitLabel(endLabel);
 
-        const negResultLabel = this.newLabel(funcInfo);
-        const finalLabel = this.newLabel(funcInfo);
+        const negResultLabel = this.newLabel(fn);
+        const finalLabel = this.newLabel(fn);
         this.emitTestBitTemp('SZB', signResult, 7);
         this.asmLines.push(`JP ${negResultLabel}`);
         this.asmLines.push(`JP ${finalLabel}`);
@@ -4025,7 +5150,7 @@ class SC8P053Compiler {
         this.emitLabel(finalLabel);
     }
 
-    private emitSignedModulo(left: Parser.SyntaxNode, right: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitSignedModulo(left: Parser.SyntaxNode, right: Parser.SyntaxNode, fn: Fn) {
         const rightConst = this.getConstantValue(right);
         const leftConst = this.getConstantValue(left);
         if (rightConst !== null && rightConst === 0) {
@@ -4044,11 +5169,11 @@ class SC8P053Compiler {
         this.asmLines.push('LDIA 0x00');
         this.emitLdAToTemp(leftWasNeg);
 
-        this.emitLoadAccumulator(left, funcInfo);
+        this.emitLoadAccumulator(left, fn);
         const tLeft = this.allocTemp();
         this.emitLdAToTemp(tLeft);
 
-        const leftDoneLabel = this.newLabel(funcInfo);
+        const leftDoneLabel = this.newLabel(fn);
         this.emitTestBitTemp('SNZB', tLeft, 7);
         this.asmLines.push(`JP ${leftDoneLabel}`);
         this.emitLdTempToA(tLeft);
@@ -4059,11 +5184,11 @@ class SC8P053Compiler {
         this.emitLdAToTemp(leftWasNeg);
         this.emitLabel(leftDoneLabel);
 
-        this.emitLoadAccumulator(right, funcInfo);
+        this.emitLoadAccumulator(right, fn);
         const tRight = this.allocTemp();
         this.emitLdAToTemp(tRight);
 
-        const rightDoneLabel = this.newLabel(funcInfo);
+        const rightDoneLabel = this.newLabel(fn);
         this.emitTestBitTemp('SNZB', tRight, 7);
         this.asmLines.push(`JP ${rightDoneLabel}`);
         this.emitLdTempToA(tRight);
@@ -4072,9 +5197,9 @@ class SC8P053Compiler {
         this.emitLdAToTemp(tRight);
         this.emitLabel(rightDoneLabel);
 
-        const skipLabel = this.newLabel(funcInfo);
-        const loop = this.newLabel(funcInfo);
-        const done = this.newLabel(funcInfo);
+        const skipLabel = this.newLabel(fn);
+        const loop = this.newLabel(fn);
+        const done = this.newLabel(fn);
         this.emitLdTempToA(tRight);
         this.asmLines.push('HSUBIA 0x00');
         this.asmLines.push('SZB STATUS,2');
@@ -4090,8 +5215,8 @@ class SC8P053Compiler {
         this.emitLabel(skipLabel);
         this.emitLdTempToA(tLeft);
 
-        const negResultLabel = this.newLabel(funcInfo);
-        const finalLabel = this.newLabel(funcInfo);
+        const negResultLabel = this.newLabel(fn);
+        const finalLabel = this.newLabel(fn);
         this.emitTestBitTemp('SZB', leftWasNeg, 7);
         this.asmLines.push(`JP ${negResultLabel}`);
         this.asmLines.push(`JP ${finalLabel}`);
@@ -4101,10 +5226,10 @@ class SC8P053Compiler {
         this.emitLabel(finalLabel);
     }
 
-    private emitShiftLeft(left: Parser.SyntaxNode, right: Parser.SyntaxNode, funcInfo: Fn) {
+    private emitShiftLeft(left: Parser.SyntaxNode, right: Parser.SyntaxNode, fn: Fn) {
         const rightConst = this.getConstantValue(right);
         if (rightConst !== null) {
-            this.emitLoadAccumulator(left, funcInfo);
+            this.emitLoadAccumulator(left, fn);
             const t0 = this.allocTemp();
             this.emitLdAToTemp(t0);
             for (let i = 0; i < rightConst; i++) {
@@ -4113,14 +5238,14 @@ class SC8P053Compiler {
                 this.emitLdAToTemp(t0);
             }
         } else {
-            this.emitLoadAccumulator(left, funcInfo);
+            this.emitLoadAccumulator(left, fn);
             const t0 = this.allocTemp();
             this.emitLdAToTemp(t0);
-            this.emitLoadAccumulator(right, funcInfo);
+            this.emitLoadAccumulator(right, fn);
             const t1 = this.allocTemp();
             this.emitLdAToTemp(t1);
-            const loopLabel = this.newLabel(funcInfo);
-            const doneLabel = this.newLabel(funcInfo);
+            const loopLabel = this.newLabel(fn);
+            const doneLabel = this.newLabel(fn);
             this.emitLdTempToA(t1);
             this.asmLines.push('HSUBIA 0x00');
             this.asmLines.push('SZB STATUS,2');
@@ -4141,16 +5266,16 @@ class SC8P053Compiler {
         }
     }
 
-    private emitShiftRight(left: Parser.SyntaxNode, right: Parser.SyntaxNode, funcInfo: Fn, isSigned: boolean = false) {
+    private emitShiftRight(left: Parser.SyntaxNode, right: Parser.SyntaxNode, fn: Fn, isSigned: boolean = false) {
         const rightConst = this.getConstantValue(right);
         if (rightConst !== null) {
-            this.emitLoadAccumulator(left, funcInfo);
+            this.emitLoadAccumulator(left, fn);
             const t0 = this.allocTemp();
             this.emitLdAToTemp(t0);
             if (isSigned && rightConst > 0) {
-                const negLabel = this.newLabel(funcInfo);
-                const posLabel = this.newLabel(funcInfo);
-                const endLabel = this.newLabel(funcInfo);
+                const negLabel = this.newLabel(fn);
+                const posLabel = this.newLabel(fn);
+                const endLabel = this.newLabel(fn);
                 this.emitTestBitTemp('SNZB', t0, 7);
                 this.asmLines.push(`JP ${posLabel}`);
                 this.emitLabel(negLabel);
@@ -4175,14 +5300,14 @@ class SC8P053Compiler {
                 }
             }
         } else {
-            this.emitLoadAccumulator(left, funcInfo);
+            this.emitLoadAccumulator(left, fn);
             const t0 = this.allocTemp();
             this.emitLdAToTemp(t0);
-            this.emitLoadAccumulator(right, funcInfo);
+            this.emitLoadAccumulator(right, fn);
             const t1 = this.allocTemp();
             this.emitLdAToTemp(t1);
-            const loopLabel = this.newLabel(funcInfo);
-            const doneLabel = this.newLabel(funcInfo);
+            const loopLabel = this.newLabel(fn);
+            const doneLabel = this.newLabel(fn);
             this.emitLdTempToA(t1);
             this.asmLines.push('HSUBIA 0x00');
             this.asmLines.push('SZB STATUS,2');
@@ -4210,17 +5335,17 @@ class SC8P053Compiler {
         }
     }
 
-    private emitShiftAssign(sym: Sym, left: Parser.SyntaxNode, right: Parser.SyntaxNode, funcInfo: Fn, isRight: boolean) {
-        const isSigned = isRight && sym.type === 'i8';
+    private emitShiftAssign(sym: Sym, right: Parser.SyntaxNode, fn: Fn, isRight: boolean) {
+        const isSigned = isRight && sym.typeInfo.type === 'i8';
         const rightConst = this.getConstantValue(right);
         if (rightConst !== null) {
             this.emitLdSymToA(sym);
             const t0 = this.allocTemp();
             this.emitLdAToTemp(t0);
             if (isRight && isSigned && rightConst > 0) {
-                const negLabel = this.newLabel(funcInfo);
-                const posLabel = this.newLabel(funcInfo);
-                const endLabel = this.newLabel(funcInfo);
+                const negLabel = this.newLabel(fn);
+                const posLabel = this.newLabel(fn);
+                const endLabel = this.newLabel(fn);
                 this.emitTestBitTemp('SNZB', t0, 7);
                 this.asmLines.push(`JP ${posLabel}`);
                 this.emitLabel(negLabel);
@@ -4255,11 +5380,11 @@ class SC8P053Compiler {
             this.emitLdSymToA(sym);
             const t0 = this.allocTemp();
             this.emitLdAToTemp(t0);
-            this.emitLoadAccumulator(right, funcInfo);
+            this.emitLoadAccumulator(right, fn);
             const t1 = this.allocTemp();
             this.emitLdAToTemp(t1);
-            const loopLabel = this.newLabel(funcInfo);
-            const doneLabel = this.newLabel(funcInfo);
+            const loopLabel = this.newLabel(fn);
+            const doneLabel = this.newLabel(fn);
             this.emitLdTempToA(t1);
             this.asmLines.push('HSUBIA 0x00');
             this.asmLines.push('SZB STATUS,2');
@@ -4293,16 +5418,16 @@ class SC8P053Compiler {
         }
     }
 
-    private emitArithAssign(sym: Sym, left: Parser.SyntaxNode, right: Parser.SyntaxNode, funcInfo: Fn, op: string) {
-        const isSigned = sym.type === 'i8';
+    private emitArithAssign(sym: Sym, left: Parser.SyntaxNode, right: Parser.SyntaxNode, fn: Fn, op: string) {
+        const isSigned = sym.typeInfo.type === 'i8';
         if (op === '*=') {
-            this.emitMultiply(left, right, funcInfo);
+            this.emitMultiply(left, right, fn);
         } else if (op === '/=') {
-            if (isSigned) this.emitSignedDivide(left, right, funcInfo);
-            else this.emitDivide(left, right, funcInfo);
+            if (isSigned) this.emitSignedDivide(left, right, fn);
+            else this.emitDivide(left, right, fn);
         } else if (op === '%=') {
-            if (isSigned) this.emitSignedModulo(left, right, funcInfo);
-            else this.emitModulo(left, right, funcInfo);
+            if (isSigned) this.emitSignedModulo(left, right, fn);
+            else this.emitModulo(left, right, fn);
         }
         this.emitLdAToSym(sym);
     }
@@ -4324,7 +5449,7 @@ class SC8P053Compiler {
         return this.parseNumber(valueNode.text) & 0xFF;
     }
 
-    private resolveSymbol(node: Parser.SyntaxNode, funcInfo: Fn): Sym | null {
+    private resolveSymbol(node: Parser.SyntaxNode, fn: Fn): Sym | null {
         const inner = this.unwrapParentheses(node);
         let name = inner.text.trim();
         if (inner.type === 'pointer_declarator') {
@@ -4336,12 +5461,12 @@ class SC8P053Compiler {
                 }
             }
         }
-        if (funcInfo.localSymbols.has(name)) return funcInfo.localSymbols.get(name)!;
+        if (fn.localSymbols.has(name)) return fn.localSymbols.get(name)!;
         if (this.globalSymbols.has(name)) return this.globalSymbols.get(name)!;
         return null;
     }
 
-    private resolveArraySymbol(node: Parser.SyntaxNode, funcInfo: Fn): Sym | null {
+    private resolveArraySymbol(node: Parser.SyntaxNode, fn: Fn): Sym | null {
         let arrayNode = node.childForFieldName('array');
         if (!arrayNode) {
             for (let i = 0; i < node.childCount; i++) {
@@ -4350,7 +5475,7 @@ class SC8P053Compiler {
             }
         }
         if (!arrayNode) return null;
-        return this.resolveSymbol(arrayNode, funcInfo);
+        return this.resolveSymbol(arrayNode, fn);
     }
 
     private getGlobalAddressValue(node: Parser.SyntaxNode): number | null {
@@ -4367,7 +5492,7 @@ class SC8P053Compiler {
         if (inner.type === 'identifier') {
             const name = inner.text.trim();
             const sym = this.globalSymbols.get(name);
-            if (sym && sym.isArray) return sym.ramAddr;
+            if (sym && sym.typeInfo.isArray) return sym.ramAddr;
         }
         if (inner.type === 'cast_expression') {
             const argNode = inner.childForFieldName('value');
@@ -4450,8 +5575,8 @@ class SC8P053Compiler {
         return node.childForFieldName(field);
     }
 
-    private newLabel(funcInfo: Fn): string {
-        return `L${funcInfo.asmName}_${funcInfo.labelCounter++}`;
+    private newLabel(fn: Fn): string {
+        return `L${fn.asmName}_${fn.labelCounter++}`;
     }
 }
 

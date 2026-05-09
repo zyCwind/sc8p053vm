@@ -1264,10 +1264,6 @@ export class VM {
         const anyPwmEnabled = (pwmcon0 & 0x1F) !== 0;
         if (!anyPwmEnabled) return;
 
-        // 获取PWM时钟分频
-        const clkDiv = (pwmcon0 >> 5) & 0x07;
-        const clkDivRatio = [1, 2, 4, 8, 16, 32, 64, 128][clkDiv];
-
         // 检查死区使能
         const pwm0DTEn = (pwmcon1 & VM.PWMCON1_PWM0DTEN) !== 0;
         const pwm2DTEn = (pwmcon1 & VM.PWMCON1_PWM2DTEN) !== 0;
@@ -1293,8 +1289,6 @@ export class VM {
 
             // Check if counter equals PWMT (period match)
             // Per manual Section 10.4: "When PWM period counter equals PWMT, in the next increment cycle:"
-            const periodMatch0123 = (this.pwmPeriodCounter === pwmt);
-            const periodMatch4 = (this.pwmPeriodCounter === pwm4t);
 
             // Increment counter first
             this.pwmPeriodCounter++;
@@ -1904,44 +1898,44 @@ export class VM {
 
         // 检查TIMER0中断
         if ((intcon & VM.INTCON_T0IE) && (intcon & VM.INTCON_T0IF)) {
-            this.triggerInterrupt("TIMER0");
+            this.triggerInterrupt();
             return;
         }
 
         // 检查外部中断
         if ((intcon & VM.INTCON_INTE) && (intcon & VM.INTCON_INTF)) {
-            this.triggerInterrupt("INT");
+            this.triggerInterrupt();
             return;
         }
 
         // 检查PORTB电平变化中断
         if ((intcon & VM.INTCON_RBIE) && (intcon & VM.INTCON_RBIF)) {
-            this.triggerInterrupt("PORTB");
+            this.triggerInterrupt();
             return;
         }
 
         if (peie) {
             // 检查比较器中断
             if ((pie1 & VM.PIE1_CMPIE) && (pir1 & VM.PIR1_CMPIF)) {
-                this.triggerInterrupt("CMP");
+                this.triggerInterrupt();
                 return;
             }
 
             // 检查PWM中断
             if ((pie1 & VM.PIE1_PWMIE) && (pir1 & VM.PIR1_PWMIF)) {
-                this.triggerInterrupt("PWM");
+                this.triggerInterrupt();
                 return;
             }
 
             // 检查PORTA电平变化中断
             if ((pie1 & VM.PIE1_RAIE) && (pir1 & VM.PIR1_RAIF)) {
-                this.triggerInterrupt("PORTA");
+                this.triggerInterrupt();
                 return;
             }
 
             // 检查TIMER2中断
             if ((pie1 & VM.PIE1_TMR2IE) && (pir1 & VM.PIR1_TMR2IF)) {
-                this.triggerInterrupt("TIMER2");
+                this.triggerInterrupt();
                 return;
             }
         }
@@ -1950,7 +1944,7 @@ export class VM {
     /**
      * 触发中断
      */
-    private triggerInterrupt(interrupt: string): void {
+    private triggerInterrupt(): void {
         // 禁止全局中断
         let intcon = this.ram[VM.SFR_INTCON];
         intcon &= ~VM.INTCON_GIE;
@@ -1991,7 +1985,6 @@ export class VM {
             if (pin < 0 || pin > 5) return;
 
             // Update external pin state (simulates physical connection to the pin)
-            const oldExternalState = this.externalPinStateA;
             if (value) {
                 this.externalPinStateA |= (1 << pin);
             } else {

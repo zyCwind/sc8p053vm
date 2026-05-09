@@ -2828,6 +2828,585 @@ void main() {}
         assert(asm.includes('__INTERRUPT:'), 'should have __INTERRUPT label');
     });
 
+    await test(`error: non-void function no return (Bug 97)`, async () => {
+        try {
+            await compileAndRun('unsigned char f() { } void main() { }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('must return'), `expected must return error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: if-return no else (Bug 97)`, async () => {
+        try {
+            await compileAndRun('unsigned char f(unsigned char x) { if (x) return 1; } void main() { }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('must return'), `expected must return error, got: ${e.message}`);
+        }
+    });
+
+    await test(`while(1) return compiles (Bug 97)`, async () => {
+        const { debugInfo, vm } = await compileAndRun('unsigned char f() { while(1) { return 1; } } void main() { unsigned char r = f(); }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 1, `f()=1, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`error: while(1) no return (Bug 97)`, async () => {
+        try {
+            await compileAndRun('unsigned char f() { while(1) { } } void main() { }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('must return'), `expected must return error, got: ${e.message}`);
+        }
+    });
+
+    await test(`while(1) break + return after compiles (Bug 97)`, async () => {
+        const { debugInfo, vm } = await compileAndRun('unsigned char f(unsigned char x) { while(1) { if (x) break; } return 1; } void main() { unsigned char r = f(1); }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 1, `f(1)=1, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`error: while(1) break no return after (Bug 97)`, async () => {
+        try {
+            await compileAndRun('unsigned char f(unsigned char x) { while(1) { if (x) break; } } void main() { }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('must return'), `expected must return error, got: ${e.message}`);
+        }
+    });
+
+    await test(`for loop with return after compiles (Bug 97)`, async () => {
+        const { debugInfo, vm } = await compileAndRun('unsigned char f(unsigned char n) { unsigned char i; for(i=0;i<n;i++) {} return 0; } void main() { unsigned char r = f(3); }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 0, `f(3)=0, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`error: for loop no return (Bug 97)`, async () => {
+        try {
+            await compileAndRun('unsigned char f(unsigned char n) { unsigned char i; for(i=0;i<n;i++) {} } void main() { }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('must return'), `expected must return error, got: ${e.message}`);
+        }
+    });
+
+    await test(`do-while(1) return compiles (Bug 97)`, async () => {
+        const { debugInfo, vm } = await compileAndRun('unsigned char f() { do { return 1; } while(1); } void main() { unsigned char r = f(); }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 1, `f()=1, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`error: do-while(1) no return (Bug 97)`, async () => {
+        try {
+            await compileAndRun('unsigned char f() { do { } while(1); } void main() { }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('must return'), `expected must return error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: while(1) continue no return (Bug 97)`, async () => {
+        try {
+            await compileAndRun('unsigned char f() { while(1) { continue; } } void main() { }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('must return'), `expected must return error, got: ${e.message}`);
+        }
+    });
+
+    await test(`do-while(1) conditional continue + return compiles (Bug 97)`, async () => {
+        const { debugInfo, vm } = await compileAndRun('unsigned char f(unsigned char x) { do { if (x) continue; return 1; } while(1); } void main() { unsigned char r = f(0); }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 1, `f(0)=1, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`error: do-while(1) conditional continue no return (Bug 97)`, async () => {
+        try {
+            await compileAndRun('unsigned char f(unsigned char x) { do { if (x) continue; } while(1); } void main() { }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('must return'), `expected must return error, got: ${e.message}`);
+        }
+    });
+
+    await test(`switch all cases return compiles (Bug 97)`, async () => {
+        const { debugInfo, vm } = await compileAndRun('unsigned char f(unsigned char x) { switch(x) { case 0: return 1; case 1: return 2; default: return 0; } } void main() { unsigned char r = f(0); }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 1, `f(0)=1, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`error: switch missing default no return (Bug 97)`, async () => {
+        try {
+            await compileAndRun('unsigned char f(unsigned char x) { switch(x) { case 0: return 1; case 1: return 2; } } void main() { }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('must return'), `expected must return error, got: ${e.message}`);
+        }
+    });
+
+    await test(`nested while(1) inner break + return compiles (Bug 97)`, async () => {
+        const { debugInfo, vm } = await compileAndRun('unsigned char f(unsigned char x) { while(1) { while(1) { if (x) break; } return 1; } } void main() { unsigned char r = f(1); }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 1, `f(1)=1, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`error: Syntax error - a = ; (Bug 65)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; a = ; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('Syntax error'), `expected Syntax error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: Syntax error - a += ; (Bug 65)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; a += ; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('Syntax error'), `expected Syntax error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: Syntax error - 1 = 1 (Bug 65)`, async () => {
+        try {
+            await compileAndRun('void main() { 1 = 1; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('Syntax error'), `expected Syntax error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: Syntax error - MISSING node 5 + ; (Bug 65)`, async () => {
+        try {
+            await compileAndRun('void main() { 5 + ; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('Syntax error'), `expected Syntax error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: cannot assign to expression (1+2)=5 (Bug 66)`, async () => {
+        try {
+            await compileAndRun('void main() { (1+2) = 5; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('not an lvalue'), `expected lvalue error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: cannot compound assign to number 5+=3 (Bug 66)`, async () => {
+        try {
+            await compileAndRun('void main() { 5 += 3; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('Syntax error') || e.message.includes('not an lvalue'), `expected error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: top-level struct not supported (Bug 67)`, async () => {
+        try {
+            await compileAndRun('struct foo { int x; }; void main() {}');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('struct'), `expected struct error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: top-level enum not supported (Bug 67)`, async () => {
+        try {
+            await compileAndRun('enum { A, B }; void main() {}');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('enum'), `expected enum error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: top-level typedef not supported (Bug 67)`, async () => {
+        try {
+            await compileAndRun('typedef unsigned char u8; void main() {}');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('typedef'), `expected typedef error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: goto not supported (Bug 68)`, async () => {
+        try {
+            await compileAndRun('void main() { goto label; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('goto'), `expected goto error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: labeled statement not supported (Bug 69)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; label: a = 5; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('Label'), `expected Label error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: non-void function empty return (Bug 70)`, async () => {
+        try {
+            await compileAndRun('unsigned char foo() { return; } void main() {}');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('must return a value'), `expected return value error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: unknown type identifier (Bug 71)`, async () => {
+        try {
+            await compileAndRun('void main() { mytype a = 2; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('Unknown type'), `expected Unknown type error, got: ${e.message}`);
+        }
+    });
+
+    await test(`valid: void function with bare return still works (Bug 70)`, async () => {
+        const { debugInfo, vm } = await compileAndRun('unsigned char x = 0; void foo() { x = 42; return; } void main() { foo(); }');
+        const addrX = getVarAddr(debugInfo, 'global', 'x');
+        assert(readRam(vm, addrX) === 42, `expected 42, got ${readRam(vm, addrX)}`);
+    });
+
+    await test(`error: ++5 not an lvalue (Bug 72)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; a = 5; ++5; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('not an lvalue'), `expected lvalue error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: 5++ not an lvalue (Bug 72)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; a = 5; 5++; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('not an lvalue'), `expected lvalue error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: ++(a+1) not an lvalue (Bug 72)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; a = 5; ++(a+1); }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('not an lvalue'), `expected lvalue error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: (a+1)++ not an lvalue (Bug 72)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; a = 5; (a+1)++; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('not an lvalue'), `expected lvalue error, got: ${e.message}`);
+        }
+    });
+
+    await test(`valid: a++ still works (Bug 72)`, async () => {
+        const { debugInfo, vm } = await compileAndRun('unsigned char a = 5; void main() { a++; }');
+        const addrA = getVarAddr(debugInfo, 'global', 'a');
+        assert(readRam(vm, addrA) === 6, `expected 6, got ${readRam(vm, addrA)}`);
+    });
+
+    await test(`valid: ++a still works (Bug 72)`, async () => {
+        const { debugInfo, vm } = await compileAndRun('unsigned char a = 5; void main() { ++a; }');
+        const addrA = getVarAddr(debugInfo, 'global', 'a');
+        assert(readRam(vm, addrA) === 6, `expected 6, got ${readRam(vm, addrA)}`);
+    });
+
+    await test(`error: &5 cannot take address of literal (Bug 73)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char *p; p = &5; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('not an lvalue'), `expected lvalue error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: &(a+1) cannot take address of expression (Bug 74)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; unsigned char *p; p = &(a+1); }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('not an lvalue'), `expected lvalue error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: *5 cannot dereference literal (Bug 75)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; a = *5; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('Cannot dereference'), `expected dereference error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: long type not supported (Bug 76)`, async () => {
+        try {
+            await compileAndRun('void main() { long a; a = 5; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('not supported'), `expected not supported error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: bare unsigned not supported (Bug 76)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned a; a = 5; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('not supported'), `expected not supported error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: bare signed not supported (Bug 76)`, async () => {
+        try {
+            await compileAndRun('void main() { signed a; a = 5; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('not supported'), `expected not supported error, got: ${e.message}`);
+        }
+    });
+
+    await test(`valid: &a still works (Bug 73/74)`, async () => {
+        const { debugInfo, vm } = await compileAndRun('unsigned char a; unsigned char *p; void main() { p = &a; *p = 42; }');
+        const addrA = getVarAddr(debugInfo, 'global', 'a');
+        assert(readRam(vm, addrA) === 42, `expected 42, got ${readRam(vm, addrA)}`);
+    });
+
+    await test(`valid: *p dereference still works (Bug 75)`, async () => {
+        const { debugInfo, vm } = await compileAndRun('unsigned char a; unsigned char *p; void main() { p = &a; a = 42; unsigned char b; b = *p; }');
+        const addrB = getVarAddr(debugInfo, 'main', 'b');
+        assert(readRam(vm, addrB) === 42, `expected 42, got ${readRam(vm, addrB)}`);
+    });
+
+    await test(`error: *a dereference non-pointer variable (Bug 77)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; a = 5; unsigned char b; b = *a; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('non-pointer'), `expected pointer type error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: *(a+1) dereference non-pointer expression (Bug 77)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; a = 5; unsigned char b; b = *(a+1); }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('non-pointer'), `expected pointer type error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: *a = 10 store via non-pointer dereference (Bug 77)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; a = 5; *a = 10; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('non-pointer'), `expected pointer type error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: b = &a assign address to non-pointer (Bug 77)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; a = 5; unsigned char b; b = &a; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('Cannot assign pointer to non-pointer'), `expected pointer assign error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: b = p assign pointer to non-pointer (Bug 77)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; a = 5; unsigned char *p; p = &a; unsigned char b; b = p; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('Cannot assign pointer to non-pointer'), `expected pointer assign error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: a = &a assign address to self non-pointer (Bug 77)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; a = 5; a = &a; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('Cannot assign pointer to non-pointer'), `expected pointer assign error, got: ${e.message}`);
+        }
+    });
+
+    await test(`valid: *p dereference and assign still works (Bug 77)`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char a; a = 5; unsigned char *p; p = &a; *p = 10; unsigned char b; b = *p; }');
+        const addrA = getVarAddr(debugInfo, 'main', 'a');
+        const addrB = getVarAddr(debugInfo, 'main', 'b');
+        assert(readRam(vm, addrA) === 10, `expected a=10, got ${readRam(vm, addrA)}`);
+        assert(readRam(vm, addrB) === 10, `expected b=10, got ${readRam(vm, addrB)}`);
+    });
+
+    await test(`valid: p = p + 1 pointer arithmetic compiles (Bug 77)`, async () => {
+        try {
+            await compileAndRun('unsigned char arr[3] = {10, 20, 0}; void main() { unsigned char *p; p = &arr[0]; p = p + 1; }');
+        } catch (e) {
+            assert(false, `should not have thrown error: ${e.message}`);
+        }
+    });
+
+    await test(`valid: p = arr array name to pointer compiles (Bug 77)`, async () => {
+        try {
+            await compileAndRun('unsigned char arr[3] = {10, 0, 0}; void main() { unsigned char *p; p = arr; }');
+        } catch (e) {
+            assert(false, `should not have thrown error: ${e.message}`);
+        }
+    });
+
+    await test(`error: top-level expression statement (Bug 67 variant)`, async () => {
+        try {
+            await compile('void main(){}1111');
+            assert(false, 'should have thrown error for top-level expression');
+        } catch (e) {
+            assert(e.message.includes('Unexpected top-level construct'), `expected top-level construct error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: top-level assignment statement`, async () => {
+        try {
+            await compile('unsigned char x; void main(){}x = 5;');
+            assert(false, 'should have thrown error for top-level assignment');
+        } catch (e) {
+            assert(e.message.includes('Unexpected top-level construct'), `expected top-level construct error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: p * 5 pointer multiply (Bug 78)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; unsigned char *p; p = &a; unsigned char b; b = p * 5; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('pointer'), `expected pointer error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: p / 5 pointer divide (Bug 78)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; unsigned char *p; p = &a; unsigned char b; b = p / 5; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('pointer'), `expected pointer error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: p % 5 pointer modulo (Bug 78)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; unsigned char *p; p = &a; unsigned char b; b = p % 5; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('pointer'), `expected pointer error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: p & 5 pointer bitwise and (Bug 78)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; unsigned char *p; p = &a; unsigned char b; b = p & 5; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('pointer'), `expected pointer error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: -p pointer negation (Bug 78)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; unsigned char *p; p = &a; unsigned char b; b = -p; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('pointer'), `expected pointer error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: p += p pointer add pointer (Bug 78)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; unsigned char *p; p = &a; p += p; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('pointer') || e.message.includes('add'), `expected pointer error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: 5[3] subscript on literal (Bug 79)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char b; b = 5[3]; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('subscript') || e.message.includes('array') || e.message.includes('pointer'), `expected subscript error, got: ${e.message}`);
+        }
+    });
+
+    await test(`valid: arr[0] subscript on array still works (Bug 79)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char arr[3]; arr[0] = 10; unsigned char b; b = arr[0]; }');
+        } catch (e) {
+            assert(false, `should not have thrown error: ${e.message}`);
+        }
+    });
+
+    await test(`valid: p[0] subscript on pointer still works (Bug 79)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; unsigned char *p; p = &a; a = 42; unsigned char b; b = p[0]; }');
+        } catch (e) {
+            assert(false, `should not have thrown error: ${e.message}`);
+        }
+    });
+
+    await test(`error: arr = 5 assign to array (Bug 81)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char arr[3]; arr = 5; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('array'), `expected array error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: b = arr assign array to non-pointer (Bug 81)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char arr[3]; unsigned char b; b = arr; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('array') || e.message.includes('pointer'), `expected array/pointer error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: return &a from non-pointer function (Bug 81)`, async () => {
+        try {
+            await compileAndRun('unsigned char foo() { unsigned char a; return &a; } void main() {}');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('pointer'), `expected pointer error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: return arr from function (Bug 81)`, async () => {
+        try {
+            await compileAndRun('unsigned char foo() { unsigned char arr[3]; return arr; } void main() {}');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('array'), `expected array error, got: ${e.message}`);
+        }
+    });
+
+    await test(`valid: p = arr array to pointer still works (Bug 81)`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char arr[3]; unsigned char *p; p = arr; }');
+        } catch (e) {
+            assert(false, `should not have thrown error: ${e.message}`);
+        }
+    });
+
     console.log('\n=== Test Summary ===');
     console.log(`  Passed: ${passCount}`);
     console.log(`  Failed: ${failCount}`);

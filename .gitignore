@@ -6,3 +6,5 @@ dist
 *.lst
 *.ram
 *.scx
+
+.lingma

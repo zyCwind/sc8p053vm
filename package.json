@@ -1,6 +1,6 @@
 {
   "name": "sc8p053vm",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "SC8P053 microcontroller virtual machine simulator",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
