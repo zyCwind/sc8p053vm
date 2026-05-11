@@ -13,7 +13,8 @@
         "declaration": false,
         "declarationMap": false,
         "sourceMap": false,
-        "jsx": "react-jsx"
+        "jsx": "react-jsx",
+        "types": ["jest", "@testing-library/jest-dom"]
     },
     "include": ["src/**/*"],
     "exclude": ["node_modules"]

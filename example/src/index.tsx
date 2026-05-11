@@ -692,5 +692,7 @@ class App extends React.Component<
     }
 }
 
+export default App;
+
 const root = ReactDOM.createRoot(document.getElementById('root')!);
 root.render(<App />);

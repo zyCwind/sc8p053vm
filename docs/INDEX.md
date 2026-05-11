@@ -46,8 +46,9 @@ Complete documentation map for SC8P053VM project.
 2. Use `brainstorming` skill to explore requirements
 3. Write design spec in `docs/superpowers/specs/` (Level 1 & 2 only)
 4. Create implementation plan in `docs/superpowers/plans/` (Level 1 & 2 only)
-5. Follow **[WORKFLOW.md](./WORKFLOW.md)** TDD process
-6. Check **[COMPONENTS.md](./COMPONENTS.md)** for existing utilities
+5. **⚠️ CRITICAL**: Verify both spec and plan exist before coding!
+6. Follow **[WORKFLOW.md](./WORKFLOW.md)** TDD process
+7. Check **[COMPONENTS.md](./COMPONENTS.md)** for existing utilities
 
 ### For Bug Fixes
 1. Use `systematic-debugging` skill

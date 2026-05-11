@@ -128,27 +128,22 @@ Plan should include:
 - Success criteria for each task
 - Estimated effort
 
-**Use skill**: `writing-plans` (to structure the plan)
+**Use skill**: `writing-plans` to create the implementation plan
 
-Example plan structure:
-```markdown
-# Implementation Plan: Feature X
+---
 
-## Task 1: Add Core Interface
-- [ ] Define TypeScript interface
-- [ ] Write test for interface contract
-- [ ] Implement stub
+#### ⚠️ CRITICAL CHECKPOINT: Before Starting Implementation
 
-## Task 2: Implement Logic
-- [ ] Write failing test for main logic
-- [ ] Implement minimal code to pass
-- [ ] Refactor for clarity
+**STOP! Verify documentation is complete before writing ANY code:**
 
-## Task 3: Integration
-- [ ] Connect to existing modules
-- [ ] Write integration tests
-- [ ] Update documentation
-```
+For **Level 1** (Major Architecture) and **Level 2** (Feature Development):
+- [ ] Design spec exists in `docs/superpowers/specs/`
+- [ ] Implementation plan exists in `docs/superpowers/plans/`
+- [ ] Both documents have been reviewed/approved
+
+**DO NOT proceed to Phase 3 until these are complete!**
+
+If you're working on Level 3 or 4 tasks, you can skip this check.
 
 ---
 
@@ -429,6 +424,13 @@ Types:
 - `test`: Adding/updating tests
 - `chore`: Maintenance tasks
 
+**Commit Granularity**: Group related changes into logical commits.
+- ✅ **Good**: All config files together, all tests for one feature together
+- ❌ **Bad**: One commit per file or per task step
+- **Rule**: If two changes are needed together, they should be in the same commit
+
+See **[AGENTS.md](../AGENTS.md)** "Commit Granularity" section for detailed guidelines.
+
 #### Step 21: Commit and Push
 
 ```bash
@@ -541,11 +543,10 @@ npm run build          # Compile TypeScript
 npm run dev            # Start dev server
 ```
 
-### Testing (when implemented)
+### Testing
 ```bash
-npm test               # Run all tests
-npm test -- file.test  # Run specific test
-npm test -- --watch    # Watch mode
+npm test               # Run backend tests (src/__tests__)
+npm run test:example   # Run frontend tests (example/src/__tests__)
 ```
 
 ### Linting (if configured)

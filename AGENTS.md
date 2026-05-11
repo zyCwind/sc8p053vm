@@ -77,6 +77,23 @@ This project uses AI agent skills to enforce workflows and best practices.
 
 Skills are installed in your agent's skill directory and will be available automatically.
 
+### Before Starting Implementation
+
+**MANDATORY CHECK**: Verify documentation completeness before writing ANY code!
+
+For **Level 1** (Major Architecture) and **Level 2** (Feature Development) tasks:
+- [ ] Design spec exists in `docs/superpowers/specs/`
+- [ ] Implementation plan exists in `docs/superpowers/plans/`
+- [ ] Both documents have been reviewed/approved
+
+**DO NOT start coding until these documents are complete!**
+
+**Use the `writing-plans` skill** after spec approval to create the implementation plan.
+
+For **Level 3** (Tool Configuration) and **Level 4** (Simple Fixes):
+- Just ensure relevant existing docs are updated
+- No spec/plan required
+
 ## Documentation Requirements by Task Type
 
 Not all tasks require the same level of documentation. Use this guide to determine what documents to create:
@@ -267,6 +284,31 @@ This project uses **ESLint** and **Prettier** to enforce code quality and style 
 - `npm run dev` compiles example/ with hot reload
 - They use different build systems (tsc vs webpack)
 
+### Testing with Jest
+
+This project uses **Jest** for automated testing following TDD principles.
+
+**Test structure:**
+- `src/__tests__/*.test.ts` - Backend unit tests (compiler, VM, assembler)
+- `example/src/__tests__/*.test.tsx` - Frontend React component tests
+
+**Running tests:**
+```bash
+npm test               # Run backend tests only
+npm run test:example   # Run frontend tests only
+```
+
+**TDD workflow:**
+1. Write failing test case first
+2. Write minimal code to pass test
+3. Refactor while keeping tests green
+4. Never skip testing
+
+**For new agents:**
+- Always write tests before implementation (TDD is MANDATORY)
+- Run `npm test` before committing to ensure all tests pass
+- See docs/WORKFLOW.md for detailed TDD process
+
 ---
 
 ## Git Commit Standards
@@ -421,6 +463,71 @@ Refs: #45
 - Mentions tests and documentation
 - **Does NOT include version bump** (unless actually releasing)
 - References related issue
+
+### Commit Granularity
+
+**Group related changes into logical commits.**
+
+Each commit should represent a **complete, working unit of change** that can be understood independently.
+
+#### ✅ Good Practice - Logical Grouping
+
+**Example 1: Infrastructure setup (all config together)**
+```markdown
+chore: setup vitest testing infrastructure
+
+- Install vitest and testing dependencies
+- Create root vitest.config.ts for src/ tests
+- Create example/vitest.config.ts for frontend tests
+- Add test scripts to package.json
+```
+
+**Example 2: Feature implementation (all tests together)**
+```markdown
+test: migrate compiler tests to Vitest framework
+
+- Create src/__tests__/cc.test.ts with helper functions
+- Migrate basic syntax tests (arithmetic, bitwise operations)
+- Migrate advanced feature tests (functions, pointers)
+- Migrate error handling tests
+- Exclude legacy cc-test.js from vitest
+```
+
+**Example 3: Documentation update (all docs together)**
+```markdown
+docs: add TDD guidelines to project documentation
+
+- Add TDD section to AGENTS.md with usage examples
+- Update WORKFLOW.md with test commands
+- Update INDEX.md with testing references
+```
+
+#### ❌ Bad Practice - Too Granular
+
+**Don't do this:**
+```bash
+# One commit per file - too fragmented!
+git commit -m "chore: add vitest.config.ts"
+git commit -m "chore: add example/vitest.config.ts"
+git commit -m "chore: update package.json scripts"
+git commit -m "test: add first test case"
+git commit -m "test: add second test case"
+```
+
+**Why it's bad:**
+- Commit history becomes cluttered with tiny changes
+- Individual commits lack semantic meaning
+- Hard to understand the complete feature from git log
+- Difficult to revert logically (need multiple reverts)
+
+#### Decision Rule
+
+**Ask yourself**: "If I revert this commit, will the feature still work?"
+
+- **YES** → The commit is too small, merge with related changes
+- **NO** → Good granularity, this is a logical unit
+
+**Rule of thumb**: If two changes are needed together for the feature to work, they should be in the same commit.
 
 ### Before Committing Checklist
 
