@@ -16,7 +16,12 @@
   ],
   "scripts": {
     "build": "tsc",
-    "dev": "cd example && webpack serve --mode development"
+    "dev": "cd example && webpack serve --mode development",
+    "lint": "eslint . --ext .ts,.tsx",
+    "lint:src": "eslint src/ --ext .ts",
+    "lint:example": "eslint example/ --ext .tsx",
+    "lint:fix": "eslint . --ext .ts,.tsx --fix",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,css}\""
   },
   "keywords": [
     "sc8p053",
@@ -41,11 +46,20 @@
   "devDependencies": {
     "@types/react": "^18.3.28",
     "@types/react-dom": "^18.3.7",
+    "@typescript-eslint/eslint-plugin": "^4.33.0",
+    "@typescript-eslint/parser": "^4.33.0",
     "css-loader": "^7.1.4",
+    "eslint": "^7.32.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.5",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^4.6.2",
     "html-webpack-plugin": "^5.6.0",
+    "prettier": "^3.8.3",
     "react-dom": "^18.3.1",
     "style-loader": "^4.0.0",
     "tree-sitter": "^0.21.1",
+    "tree-sitter-c": "^0.23.1",
     "ts-loader": "^9.5.4",
     "typescript": "^5.9.2",
     "webpack": "^5.89.0",

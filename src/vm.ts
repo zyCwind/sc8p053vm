@@ -8,20 +8,20 @@
  * Reset source enumeration
  */
 enum ResetSource {
-    POR = 0,   // Power-on Reset
-    WDT = 1,   // Watchdog Timer Reset
-    LVR = 2,   // Low Voltage Reset
-    STOP = 3   // STOP Instruction Wakeup
+    POR = 0, // Power-on Reset
+    WDT = 1, // Watchdog Timer Reset
+    LVR = 2, // Low Voltage Reset
+    STOP = 3, // STOP Instruction Wakeup
 }
 
 export class VM {
     // 内存配置
     private static readonly RAM_SIZE = 0x100; // 256字节地址空间(含SFR和80字节通用RAM)
-    private static readonly STACK_SIZE = 8;   // 8级堆栈
+    private static readonly STACK_SIZE = 8; // 8级堆栈
 
     // 内部振荡器频率定义
     private static readonly FHSI = 16_000_000; // 16MHz High-Speed Internal Oscillator
-    private static readonly FLSE = 32_768;     // 32.768kHz Low-Speed External Oscillator
+    private static readonly FLSE = 32_768; // 32.768kHz Low-Speed External Oscillator
 
     // 特殊功能寄存器地址定义(Bank0)
     private static readonly SFR_INDF = 0x00;
@@ -31,15 +31,15 @@ export class VM {
     private static readonly SFR_FSR = 0x04;
     private static readonly SFR_TRISB = 0x05;
     private static readonly SFR_PORTB = 0x06;
-    private static readonly SFR_WPDB = 0x07;  // PORTB下拉电阻寄存器
+    private static readonly SFR_WPDB = 0x07; // PORTB下拉电阻寄存器
     private static readonly SFR_WPUB = 0x08;
     private static readonly SFR_IOCB = 0x09;
-    private static readonly SFR_PCLATH = 0x0A;
-    private static readonly SFR_INTCON = 0x0B;
-    private static readonly SFR_ODCONB = 0x0C;
-    private static readonly SFR_PIR1 = 0x0D;
-    private static readonly SFR_PIE1 = 0x0E;
-    private static readonly SFR_CMPCON0 = 0x0F;
+    private static readonly SFR_PCLATH = 0x0a;
+    private static readonly SFR_INTCON = 0x0b;
+    private static readonly SFR_ODCONB = 0x0c;
+    private static readonly SFR_PIR1 = 0x0d;
+    private static readonly SFR_PIE1 = 0x0e;
+    private static readonly SFR_CMPCON0 = 0x0f;
     private static readonly SFR_CMPCON1 = 0x10;
     private static readonly SFR_PR2 = 0x11;
     private static readonly SFR_TMR2 = 0x12;
@@ -50,16 +50,16 @@ export class VM {
     private static readonly SFR_PWMTL = 0x17;
     private static readonly SFR_PWMTH = 0x18;
     private static readonly SFR_PWMD0L = 0x19;
-    private static readonly SFR_PWMD1L = 0x1A;
-    private static readonly SFR_PWMD4L = 0x1B;
-    private static readonly SFR_PWMT4L = 0x1C;
-    private static readonly SFR_PWMCON2 = 0x1D;
-    private static readonly SFR_PWMD01H = 0x1E;
-    private static readonly SFR_PWM01DT = 0x1F;
+    private static readonly SFR_PWMD1L = 0x1a;
+    private static readonly SFR_PWMD4L = 0x1b;
+    private static readonly SFR_PWMT4L = 0x1c;
+    private static readonly SFR_PWMCON2 = 0x1d;
+    private static readonly SFR_PWMD01H = 0x1e;
+    private static readonly SFR_PWM01DT = 0x1f;
 
     // PWMCON1寄存器位定义
-    private static readonly PWMCON1_PWM2DTEN = 0x20;  // PWM2/PWM3 dead-time enable
-    private static readonly PWMCON1_PWM0DTEN = 0x10;  // PWM0/PWM1 dead-time enable
+    private static readonly PWMCON1_PWM2DTEN = 0x20; // PWM2/PWM3 dead-time enable
+    private static readonly PWMCON1_PWM0DTEN = 0x10; // PWM0/PWM1 dead-time enable
 
     // 特殊功能寄存器地址定义(Bank1)
     private static readonly SFR_TMR0 = 0x81;
@@ -68,11 +68,11 @@ export class VM {
     private static readonly SFR_WPDA = 0x87;
     private static readonly SFR_WPUA = 0x88;
     private static readonly SFR_IOCA = 0x89;
-    private static readonly SFR_ODCONA = 0x8C;
-    private static readonly SFR_PWMD2L = 0x9B;
-    private static readonly SFR_PWMD3L = 0x9C;
-    private static readonly SFR_PWM23DT = 0x9D;
-    private static readonly SFR_PWMD23H = 0x9E;
+    private static readonly SFR_ODCONA = 0x8c;
+    private static readonly SFR_PWMD2L = 0x9b;
+    private static readonly SFR_PWMD3L = 0x9c;
+    private static readonly SFR_PWM23DT = 0x9d;
+    private static readonly SFR_PWMD23H = 0x9e;
 
     // STATUS寄存器位定义
     private static readonly STATUS_RP1 = 0x40;
@@ -117,26 +117,28 @@ export class VM {
     private static readonly T2CON_TMR2ON = 0x04;
 
     // 虚拟机状态
-    private rom: Uint16Array;          // 程序内存(1K×16位)
-    private ram: Uint8Array;           // 数据内存(256字节)
-    private stack: Uint16Array;        // 8级堆栈(10位地址)
-    private sp: number = 0;      // 堆栈指针(0-7)
-    private pc: number = 0;            // 程序计数器(10位)
-    private acc: number = 0;           // 累加器(8位)
-    private wdtElapsedTimeNs: number = 0; // Elapsed time for WDT in nanoseconds
-    private timer0Prescaler: number = 0;   // TIMER0预分频器
-    private timer0WriteDisableCycles: number = 0; // TMR0写入后禁止递增的周期数（手册8.2.1）
-    private timer2Prescaler: number = 0;   // TIMER2预分频器 (1:1, 1:4, 1:16)
-    private timer2Postscaler: number = 0;  // TIMER2后分频器
-    private pwmPeriodCounter: number = 0;  // PWM周期计数器（10位）
-    private pwmDutyCache: {                // PWM占空比缓存（高2位先写入缓存）
+    private rom: Uint16Array; // 程序内存(1K×16位)
+    private ram: Uint8Array; // 数据内存(256字节)
+    private stack: Uint16Array; // 8级堆栈(10位地址)
+    private sp = 0; // 堆栈指针(0-7)
+    private pc = 0; // 程序计数器(10位)
+    private acc = 0; // 累加器(8位)
+    private wdtElapsedTimeNs = 0; // Elapsed time for WDT in nanoseconds
+    private timer0Prescaler = 0; // TIMER0预分频器
+    private timer0WriteDisableCycles = 0; // TMR0写入后禁止递增的周期数（手册8.2.1）
+    private timer2Prescaler = 0; // TIMER2预分频器 (1:1, 1:4, 1:16)
+    private timer2Postscaler = 0; // TIMER2后分频器
+    private pwmPeriodCounter = 0; // PWM周期计数器（10位）
+    private pwmDutyCache: {
+        // PWM占空比缓存（高2位先写入缓存）
         pwm0: number;
         pwm1: number;
         pwm2: number;
         pwm3: number;
         pwm4: number;
     } = { pwm0: 0, pwm1: 0, pwm2: 0, pwm3: 0, pwm4: 0 };
-    private pwmDutyActual: {               // PWM实际占空比（10位）
+    private pwmDutyActual: {
+        // PWM实际占空比（10位）
         pwm0: number;
         pwm1: number;
         pwm2: number;
@@ -144,20 +146,23 @@ export class VM {
         pwm4: number;
     } = { pwm0: 0, pwm1: 0, pwm2: 0, pwm3: 0, pwm4: 0 };
     private pwmOutputs: boolean[] = [false, false, false, false, false]; // PWM0-4输出状态
-    private pwmDeadTimeCounters: {  // PWM dead-time counters for complementary outputs
-        pwm01: number;  // Dead-time counter for PWM0/PWM1 pair
-        pwm23: number;  // Dead-time counter for PWM2/PWM3 pair
+    private pwmDeadTimeCounters: {
+        // PWM dead-time counters for complementary outputs
+        pwm01: number; // Dead-time counter for PWM0/PWM1 pair
+        pwm23: number; // Dead-time counter for PWM2/PWM3 pair
     } = { pwm01: 0, pwm23: 0 };
-    private pwmLastState: {  // Track last state for edge detection in dead-time mode
-        pwm01: boolean;  // Last state of PWM0 (master channel)
-        pwm23: boolean;  // Last state of PWM2 (master channel)
+    private pwmLastState: {
+        // Track last state for edge detection in dead-time mode
+        pwm01: boolean; // Last state of PWM0 (master channel)
+        pwm23: boolean; // Last state of PWM2 (master channel)
     } = { pwm01: false, pwm23: false };
-    private compLastOutput: boolean = false; // 比较器上次输出（用于边沿检测）
-    private portALastValue: number = 0;   // PORTA上次读取值（用于电平变化中断 mismatch 检测）
-    private portBLastValue: number = 0;   // PORTB上次读取值（用于电平变化中断 mismatch 检测）
-    private intLastState: boolean = false; // RB0/INT引脚上次状态（用于边沿检测）
-    private compAnalogInputs: {  // Comparator analog input values (normalized 0.0-1.0)
-        cmpPlus: number;   // CMP+ pin (RB1)
+    private compLastOutput = false; // 比较器上次输出（用于边沿检测）
+    private portALastValue = 0; // PORTA上次读取值（用于电平变化中断 mismatch 检测）
+    private portBLastValue = 0; // PORTB上次读取值（用于电平变化中断 mismatch 检测）
+    private intLastState = false; // RB0/INT引脚上次状态（用于边沿检测）
+    private compAnalogInputs: {
+        // Comparator analog input values (normalized 0.0-1.0)
+        cmpPlus: number; // CMP+ pin (RB1)
         cmp0Minus: number; // CMP0- pin (RB2)
         cmp1Minus: number; // CMP1- pin (RB4)
         cmp2Minus: number; // CMP2- pin (RB5)
@@ -166,38 +171,42 @@ export class VM {
 
     // External pin states - simulates physical I/O behavior per SC8P053 manual
     // Two-bit model per pin: driven state (externallyDriven) + voltage level (externalPinState)
-    private externalPinStateA: number = 0;  // Voltage levels for PORTA pins 0-5
-    private externalPinStateB: number = 0;  // Voltage levels for PORTB pins 0-7
-    private externallyDrivenA: number = 0;  // Mask of explicitly driven PORTA pins
-    private externallyDrivenB: number = 0;  // Mask of explicitly driven PORTB pins
+    private externalPinStateA = 0; // Voltage levels for PORTA pins 0-5
+    private externalPinStateB = 0; // Voltage levels for PORTB pins 0-7
+    private externallyDrivenA = 0; // Mask of explicitly driven PORTA pins
+    private externallyDrivenB = 0; // Mask of explicitly driven PORTB pins
 
     // Clock system state
-    private lseEnabled: boolean = false;  // LSE oscillator enabled (32.768kHz crystal present)
-    private lseStabilized: boolean = false; // LSE stabilization status
-    private lseStabilizationCycles: number = 0; // Cycles elapsed for LSE stabilization
-    private t0ckiFrequency: number = 0;   // T0CKI external clock frequency in Hz (0 = not configured)
+    private lseEnabled = false; // LSE oscillator enabled (32.768kHz crystal present)
+    private lseStabilized = false; // LSE stabilization status
+    private lseStabilizationCycles = 0; // Cycles elapsed for LSE stabilization
+    private t0ckiFrequency = 0; // T0CKI external clock frequency in Hz (0 = not configured)
 
     // Comparator digital filter delay
-    private compFilterDelayNs: number = 0; // Remaining delay in nanoseconds for comparator output
-    private compPendingOutput: boolean = false; // Pending comparator output value
+    private compFilterDelayNs = 0; // Remaining delay in nanoseconds for comparator output
+    private compPendingOutput = false; // Pending comparator output value
 
-    private cycles: number = 0;        // 已执行指令周期数
-    private sleeping: boolean = false; // 休眠状态
-    private config: {                  // 配置字(OTP选项)
+    private cycles = 0; // 已执行指令周期数
+    private sleeping = false; // 休眠状态
+    private config: {
+        // 配置字(OTP选项)
         wdt: boolean;
-        lvrSel: number;                // 0x00=1.8V, 0x01=2.0V, 0x02=2.5V, 0x03=3.0V
-        fcpuDiv: number;               // 2或4
+        lvrSel: number; // 0x00=1.8V, 0x01=2.0V, 0x02=2.5V, 0x03=3.0V
+        fcpuDiv: number; // 2或4
     };
-    private vdd: number = 5.0;         // 供电电压（用于LVR检测）
+    private vdd = 5.0; // 供电电压（用于LVR检测）
 
     // 外设回调：一次性返回所有I/O端口状态
-    public ioCallback?: (ports: { A: number, B: number }) => void;
+    public ioCallback?: (ports: { A: number; B: number }) => void;
 
-    constructor(romData: Uint16Array, config = {
-        wdt: false,
-        lvrSel: 0x03, // 3.0V
-        fcpuDiv: 4    // 默认4分频
-    }) {
+    constructor(
+        romData: Uint16Array,
+        config = {
+            wdt: false,
+            lvrSel: 0x03, // 3.0V
+            fcpuDiv: 4, // 默认4分频
+        },
+    ) {
         // 初始化程序内存
         this.rom = romData;
 
@@ -269,7 +278,7 @@ export class VM {
         // 取指令(16位) - 直接从ROM读取
         const opcode = this.rom[this.pc];
         let cycles = 1;
-        let nextPc = (this.pc + 1) & 0x03FF; // PC是10位
+        let nextPc = (this.pc + 1) & 0x03ff; // PC是10位
 
         // 解码并执行指令
         const nextPcObj = { value: nextPc };
@@ -298,11 +307,11 @@ export class VM {
      * @returns 内存值
      */
     private readRam(address: number): number {
-        address &= 0xFF;
+        address &= 0xff;
 
         // 处理间接寻址(INDF寄存器)
         if (address === VM.SFR_INDF) {
-            const fsr = this.ram[VM.SFR_FSR] & 0xFF;
+            const fsr = this.ram[VM.SFR_FSR] & 0xff;
             if (fsr === 0x00) return 0x00; // 间接读取0地址返回0
             return this.readRam(fsr);
         }
@@ -319,19 +328,21 @@ export class VM {
         // 计算实际地址
         let realAddr = address;
 
-        if ((address & 0x7F) == 0x00 ||
-            (address & 0x7F) == 0x02 ||
-            (address & 0x7F) == 0x03 ||
-            (address & 0x7F) == 0x04 ||
-            (address & 0x7F) == 0x0A ||
-            (address & 0x7F) == 0x0B ||
-            (address & 0x70) == 0x70) {
-            realAddr = address & 0x7F; // Bank1镜像地址 -> Bank0物理地址
+        if (
+            (address & 0x7f) == 0x00 ||
+            (address & 0x7f) == 0x02 ||
+            (address & 0x7f) == 0x03 ||
+            (address & 0x7f) == 0x04 ||
+            (address & 0x7f) == 0x0a ||
+            (address & 0x7f) == 0x0b ||
+            (address & 0x70) == 0x70
+        ) {
+            realAddr = address & 0x7f; // Bank1镜像地址 -> Bank0物理地址
         } else if (bank === 1 && address < 0x80) {
             realAddr = address | 0x80;
         }
 
-        let value = this.ram[realAddr] & 0xFF;
+        let value = this.ram[realAddr] & 0xff;
 
         // Apply pull-up/pull-down auto-disable when pin is configured as output
         // Manual Section 6.2.3, 6.2.4, 6.3.3, 6.3.4
@@ -361,7 +372,7 @@ export class VM {
                 const cmpps = (this.ram[VM.SFR_CMPCON0] >> 6) & 0x01;
 
                 // Create mask for analog pins
-                let analogMask = 0xFF; // Start with all bits enabled
+                let analogMask = 0xff; // Start with all bits enabled
 
                 // Disable pull-up on RB1 if used as CMP+ (CMPPS=1) or CMP3- (CMPNS=011)
                 if (cmpps === 1 || cmpns === 0b011) {
@@ -370,9 +381,15 @@ export class VM {
 
                 // Disable pull-up on selected negative input pin
                 switch (cmpns) {
-                    case 0: analogMask &= ~0x04; break; // RB2 (CMP0-)
-                    case 1: analogMask &= ~0x10; break; // RB4 (CMP1-)
-                    case 2: analogMask &= ~0x20; break; // RB5 (CMP2-)
+                    case 0:
+                        analogMask &= ~0x04;
+                        break; // RB2 (CMP0-)
+                    case 1:
+                        analogMask &= ~0x10;
+                        break; // RB4 (CMP1-)
+                    case 2:
+                        analogMask &= ~0x20;
+                        break; // RB5 (CMP2-)
                     // case 3 is RB1, already handled above
                 }
 
@@ -397,12 +414,12 @@ export class VM {
                 if (pwmChannel !== null) {
                     // 该引脚由PWM控制，返回PWM的实际电平
                     if (this.pwmOutputs[pwmChannel]) {
-                        portValue |= (1 << i);
+                        portValue |= 1 << i;
                     }
                 } else {
                     // 非PWM引脚，使用统一的计算方法
                     if (this.getPinState('A', i, value)) {
-                        portValue |= (1 << i);
+                        portValue |= 1 << i;
                     }
                 }
             }
@@ -417,12 +434,12 @@ export class VM {
                 if (pwmChannel !== null) {
                     // 该引脚由PWM控制，返回PWM的实际电平
                     if (this.pwmOutputs[pwmChannel]) {
-                        portValue |= (1 << i);
+                        portValue |= 1 << i;
                     }
                 } else {
                     // 非PWM引脚，使用统一的计算方法
                     if (this.getPinState('B', i, value)) {
-                        portValue |= (1 << i);
+                        portValue |= 1 << i;
                     }
                 }
             }
@@ -440,7 +457,7 @@ export class VM {
                 const cmpps = (cmpcon0 >> 6) & 0x01;
 
                 // Create mask to zero out analog pins and disable pull-up/pull-down
-                let analogMask = 0xFF;
+                let analogMask = 0xff;
 
                 // Zero RB1 if used as CMP+ (CMPPS=1) or CMP3- (CMPNS=011)
                 if (cmpps === 1 || cmpns === 0b011) {
@@ -449,9 +466,15 @@ export class VM {
 
                 // Zero selected negative input pin
                 switch (cmpns) {
-                    case 0: analogMask &= ~0x04; break; // RB2 (CMP0-)
-                    case 1: analogMask &= ~0x10; break; // RB4 (CMP1-)
-                    case 2: analogMask &= ~0x20; break; // RB5 (CMP2-)
+                    case 0:
+                        analogMask &= ~0x04;
+                        break; // RB2 (CMP0-)
+                    case 1:
+                        analogMask &= ~0x10;
+                        break; // RB4 (CMP1-)
+                    case 2:
+                        analogMask &= ~0x20;
+                        break; // RB5 (CMP2-)
                     // case 3 is RB1, already handled above
                 }
 
@@ -468,12 +491,12 @@ export class VM {
      * @param value 要写入的值
      */
     private writeRam(address: number, value: number): void {
-        address &= 0xFF;
-        value &= 0xFF;
+        address &= 0xff;
+        value &= 0xff;
 
         // 处理间接寻址(INDF寄存器)
         if (address === VM.SFR_INDF) {
-            const fsr = this.ram[VM.SFR_FSR] & 0xFF;
+            const fsr = this.ram[VM.SFR_FSR] & 0xff;
             if (fsr === 0x00) return; // 间接写入0地址是空操作
             this.writeRam(fsr, value);
             return;
@@ -491,14 +514,16 @@ export class VM {
         // 计算实际物理地址
         let realAddr = address;
 
-        if ((address & 0x7F) == 0x00 ||
-            (address & 0x7F) == 0x02 ||
-            (address & 0x7F) == 0x03 ||
-            (address & 0x7F) == 0x04 ||
-            (address & 0x7F) == 0x0A ||
-            (address & 0x7F) == 0x0B ||
-            (address & 0x70) == 0x70) {
-            realAddr = address & 0x7F; // Bank1镜像地址 -> Bank0物理地址
+        if (
+            (address & 0x7f) == 0x00 ||
+            (address & 0x7f) == 0x02 ||
+            (address & 0x7f) == 0x03 ||
+            (address & 0x7f) == 0x04 ||
+            (address & 0x7f) == 0x0a ||
+            (address & 0x7f) == 0x0b ||
+            (address & 0x70) == 0x70
+        ) {
+            realAddr = address & 0x7f; // Bank1镜像地址 -> Bank0物理地址
         } else if (bank === 1 && address < 0x80) {
             realAddr = address | 0x80;
         }
@@ -506,7 +531,7 @@ export class VM {
         // 处理PCL写入(会更新PC)
         if (realAddr === VM.SFR_PCL) {
             const pclath = this.ram[VM.SFR_PCLATH] & 0x03;
-            this.pc = ((pclath << 8) | value) & 0x03FF;
+            this.pc = ((pclath << 8) | value) & 0x03ff;
         }
 
         // 特殊寄存器写入处理（PWM、TMR等特殊逻辑）
@@ -533,25 +558,37 @@ export class VM {
      * @returns 指令周期数
      */
     private executeInstruction(opcode: number, nextPc: { value: number }): number {
-        const f = opcode & 0x7F;
-        const imm = opcode & 0xFF;
+        const f = opcode & 0x7f;
+        const imm = opcode & 0xff;
         const bit = (opcode >> 7) & 0x07;
-        const addr10 = opcode & 0x03FF;
+        const addr10 = opcode & 0x03ff;
         let result: number;
         let status = this.readRam(VM.SFR_STATUS);
 
         switch (opcode) {
-            case 0x0000: return 1;
+            case 0x0000:
+                return 1;
             case 0x0008:
-                if (this.sp > 0) { this.sp--; nextPc.value = this.stack[this.sp] & 0x03FF; }
+                if (this.sp > 0) {
+                    this.sp--;
+                    nextPc.value = this.stack[this.sp] & 0x03ff;
+                }
                 return 2;
             case 0x0009:
-                if (this.sp > 0) { this.sp--; nextPc.value = this.stack[this.sp] & 0x03FF; }
-                { let intcon = this.readRam(VM.SFR_INTCON); intcon |= VM.INTCON_GIE; this.writeRam(VM.SFR_INTCON, intcon); }
+                if (this.sp > 0) {
+                    this.sp--;
+                    nextPc.value = this.stack[this.sp] & 0x03ff;
+                }
+                {
+                    let intcon = this.readRam(VM.SFR_INTCON);
+                    intcon |= VM.INTCON_GIE;
+                    this.writeRam(VM.SFR_INTCON, intcon);
+                }
                 return 2;
             case 0x0063:
                 this.sleeping = true;
-                status &= ~VM.STATUS_PD; status |= VM.STATUS_TO;
+                status &= ~VM.STATUS_PD;
+                status |= VM.STATUS_TO;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             case 0x0064:
@@ -566,72 +603,97 @@ export class VM {
                 return 1;
         }
 
-        switch (opcode & 0xFF00) {
-            case 0x3000: this.acc = imm; return 1;
+        switch (opcode & 0xff00) {
+            case 0x3000:
+                this.acc = imm;
+                return 1;
             case 0x3400:
-                if (this.sp > 0) { this.sp--; nextPc.value = this.stack[this.sp] & 0x03FF; }
+                if (this.sp > 0) {
+                    this.sp--;
+                    nextPc.value = this.stack[this.sp] & 0x03ff;
+                }
                 this.acc = imm;
                 return 2;
             case 0x3800:
-                result = this.acc | imm; this.acc = result;
-                if (result === 0) status |= VM.STATUS_Z; else status &= ~VM.STATUS_Z;
+                result = this.acc | imm;
+                this.acc = result;
+                if (result === 0) status |= VM.STATUS_Z;
+                else status &= ~VM.STATUS_Z;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             case 0x3900:
-                result = this.acc & imm; this.acc = result;
-                if (result === 0) status |= VM.STATUS_Z; else status &= ~VM.STATUS_Z;
+                result = this.acc & imm;
+                this.acc = result;
+                if (result === 0) status |= VM.STATUS_Z;
+                else status &= ~VM.STATUS_Z;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
-            case 0x3A00:
-                result = this.acc ^ imm; this.acc = result;
-                if (result === 0) status |= VM.STATUS_Z; else status &= ~VM.STATUS_Z;
+            case 0x3a00:
+                result = this.acc ^ imm;
+                this.acc = result;
+                if (result === 0) status |= VM.STATUS_Z;
+                else status &= ~VM.STATUS_Z;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
-            case 0x3C00: {
+            case 0x3c00: {
                 const r = this.subWithFlags(imm, this.acc, 0, status);
-                status = r.status; this.acc = r.result & 0xFF;
+                status = r.status;
+                this.acc = r.result & 0xff;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
-            case 0x3D00: {
+            case 0x3d00: {
                 const r = this.subWithFlags(this.acc, imm, 0, status);
-                status = r.status; this.acc = r.result & 0xFF;
+                status = r.status;
+                this.acc = r.result & 0xff;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
-            case 0x3E00: {
+            case 0x3e00: {
                 const r = this.addWithFlags(this.acc, imm, 0, status);
-                status = r.status; this.acc = r.result & 0xFF;
+                status = r.status;
+                this.acc = r.result & 0xff;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
         }
 
-        switch (opcode & 0xFC00) {
+        switch (opcode & 0xfc00) {
             case 0x1000: {
-                let value = this.readRam(f); value &= ~(1 << bit); this.writeRam(f, value);
+                let value = this.readRam(f);
+                value &= ~(1 << bit);
+                this.writeRam(f, value);
                 return 1;
             }
             case 0x1400: {
-                let value = this.readRam(f); value |= (1 << bit); this.writeRam(f, value);
+                let value = this.readRam(f);
+                value |= 1 << bit;
+                this.writeRam(f, value);
                 return 1;
             }
             case 0x1800: {
-                let value = this.readRam(f);
-                if ((value & (1 << bit)) === 0) { nextPc.value = (nextPc.value + 1) & 0x03FF; return 2; }
+                const value = this.readRam(f);
+                if ((value & (1 << bit)) === 0) {
+                    nextPc.value = (nextPc.value + 1) & 0x03ff;
+                    return 2;
+                }
                 return 1;
             }
-            case 0x1C00: {
-                let value = this.readRam(f);
-                if ((value & (1 << bit)) !== 0) { nextPc.value = (nextPc.value + 1) & 0x03FF; return 2; }
+            case 0x1c00: {
+                const value = this.readRam(f);
+                if ((value & (1 << bit)) !== 0) {
+                    nextPc.value = (nextPc.value + 1) & 0x03ff;
+                    return 2;
+                }
                 return 1;
             }
             case 0x2000:
                 if (this.sp < VM.STACK_SIZE) {
-                    this.stack[this.sp] = nextPc.value & 0x03FF; this.sp++;
+                    this.stack[this.sp] = nextPc.value & 0x03ff;
+                    this.sp++;
                 } else {
                     for (let i = 0; i < VM.STACK_SIZE - 1; i++) this.stack[i] = this.stack[i + 1];
-                    this.stack[VM.STACK_SIZE - 1] = nextPc.value & 0x03FF;
+                    this.stack[VM.STACK_SIZE - 1] = nextPc.value & 0x03ff;
                 }
                 nextPc.value = addr10;
                 return 2;
@@ -640,7 +702,7 @@ export class VM {
                 return 2;
         }
 
-        switch (opcode & 0xFF80) {
+        switch (opcode & 0xff80) {
             case 0x0080:
                 this.writeRam(f, this.acc);
                 return 1;
@@ -651,243 +713,318 @@ export class VM {
                 return 1;
             case 0x0200: {
                 const r = this.subWithFlags(this.readRam(f), this.acc, 0, status);
-                status = r.status; this.acc = r.result & 0xFF;
+                status = r.status;
+                this.acc = r.result & 0xff;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
             case 0x0280: {
                 const r = this.subWithFlags(this.readRam(f), this.acc, 0, status);
-                status = r.status; this.writeRam(f, r.result & 0xFF);
+                status = r.status;
+                this.writeRam(f, r.result & 0xff);
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
             case 0x0300:
-                result = (this.readRam(f) - 1) & 0xFF; this.acc = result;
-                if (result === 0) status |= VM.STATUS_Z; else status &= ~VM.STATUS_Z;
+                result = (this.readRam(f) - 1) & 0xff;
+                this.acc = result;
+                if (result === 0) status |= VM.STATUS_Z;
+                else status &= ~VM.STATUS_Z;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             case 0x0380:
-                result = (this.readRam(f) - 1) & 0xFF; this.writeRam(f, result);
-                if (result === 0) status |= VM.STATUS_Z; else status &= ~VM.STATUS_Z;
+                result = (this.readRam(f) - 1) & 0xff;
+                this.writeRam(f, result);
+                if (result === 0) status |= VM.STATUS_Z;
+                else status &= ~VM.STATUS_Z;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             case 0x0400:
-                result = this.readRam(f) | this.acc; this.acc = result;
-                if (result === 0) status |= VM.STATUS_Z; else status &= ~VM.STATUS_Z;
+                result = this.readRam(f) | this.acc;
+                this.acc = result;
+                if (result === 0) status |= VM.STATUS_Z;
+                else status &= ~VM.STATUS_Z;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             case 0x0480:
-                result = this.readRam(f) | this.acc; this.writeRam(f, result);
-                if (result === 0) status |= VM.STATUS_Z; else status &= ~VM.STATUS_Z;
+                result = this.readRam(f) | this.acc;
+                this.writeRam(f, result);
+                if (result === 0) status |= VM.STATUS_Z;
+                else status &= ~VM.STATUS_Z;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             case 0x0500:
-                result = this.readRam(f) & this.acc; this.acc = result;
-                if (result === 0) status |= VM.STATUS_Z; else status &= ~VM.STATUS_Z;
+                result = this.readRam(f) & this.acc;
+                this.acc = result;
+                if (result === 0) status |= VM.STATUS_Z;
+                else status &= ~VM.STATUS_Z;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             case 0x0580:
-                result = this.readRam(f) & this.acc; this.writeRam(f, result);
-                if (result === 0) status |= VM.STATUS_Z; else status &= ~VM.STATUS_Z;
+                result = this.readRam(f) & this.acc;
+                this.writeRam(f, result);
+                if (result === 0) status |= VM.STATUS_Z;
+                else status &= ~VM.STATUS_Z;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             case 0x0600:
-                result = this.readRam(f) ^ this.acc; this.acc = result;
-                if (result === 0) status |= VM.STATUS_Z; else status &= ~VM.STATUS_Z;
+                result = this.readRam(f) ^ this.acc;
+                this.acc = result;
+                if (result === 0) status |= VM.STATUS_Z;
+                else status &= ~VM.STATUS_Z;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             case 0x0680:
-                result = this.readRam(f) ^ this.acc; this.writeRam(f, result);
-                if (result === 0) status |= VM.STATUS_Z; else status &= ~VM.STATUS_Z;
+                result = this.readRam(f) ^ this.acc;
+                this.writeRam(f, result);
+                if (result === 0) status |= VM.STATUS_Z;
+                else status &= ~VM.STATUS_Z;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             case 0x0700: {
                 const r = this.addWithFlags(this.acc, this.readRam(f), 0, status);
-                status = r.status; this.acc = r.result & 0xFF;
+                status = r.status;
+                this.acc = r.result & 0xff;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
             case 0x0780: {
                 const r = this.addWithFlags(this.acc, this.readRam(f), 0, status);
-                status = r.status; this.writeRam(f, r.result & 0xFF);
+                status = r.status;
+                this.writeRam(f, r.result & 0xff);
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
             case 0x0800:
                 this.acc = this.readRam(f);
-                if (this.acc === 0) status |= VM.STATUS_Z; else status &= ~VM.STATUS_Z;
+                if (this.acc === 0) status |= VM.STATUS_Z;
+                else status &= ~VM.STATUS_Z;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             case 0x0880: {
-                const value = this.readRam(f); this.writeRam(f, value);
-                if (value === 0) status |= VM.STATUS_Z; else status &= ~VM.STATUS_Z;
+                const value = this.readRam(f);
+                this.writeRam(f, value);
+                if (value === 0) status |= VM.STATUS_Z;
+                else status &= ~VM.STATUS_Z;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
             case 0x0900:
-                result = (~this.readRam(f)) & 0xFF; this.acc = result;
-                if (result === 0) status |= VM.STATUS_Z; else status &= ~VM.STATUS_Z;
+                result = ~this.readRam(f) & 0xff;
+                this.acc = result;
+                if (result === 0) status |= VM.STATUS_Z;
+                else status &= ~VM.STATUS_Z;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             case 0x0980:
-                result = (~this.readRam(f)) & 0xFF; this.writeRam(f, result);
-                if (result === 0) status |= VM.STATUS_Z; else status &= ~VM.STATUS_Z;
+                result = ~this.readRam(f) & 0xff;
+                this.writeRam(f, result);
+                if (result === 0) status |= VM.STATUS_Z;
+                else status &= ~VM.STATUS_Z;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
-            case 0x0A00:
-                result = (this.readRam(f) + 1) & 0xFF; this.acc = result;
-                if (result === 0) status |= VM.STATUS_Z; else status &= ~VM.STATUS_Z;
+            case 0x0a00:
+                result = (this.readRam(f) + 1) & 0xff;
+                this.acc = result;
+                if (result === 0) status |= VM.STATUS_Z;
+                else status &= ~VM.STATUS_Z;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
-            case 0x0A80:
-                result = (this.readRam(f) + 1) & 0xFF; this.writeRam(f, result);
-                if (result === 0) status |= VM.STATUS_Z; else status &= ~VM.STATUS_Z;
+            case 0x0a80:
+                result = (this.readRam(f) + 1) & 0xff;
+                this.writeRam(f, result);
+                if (result === 0) status |= VM.STATUS_Z;
+                else status &= ~VM.STATUS_Z;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
-            case 0x0B00:
-                result = (this.readRam(f) - 1) & 0xFF; this.acc = result;
-                if (result === 0) { nextPc.value = (nextPc.value + 1) & 0x03FF; return 2; }
+            case 0x0b00:
+                result = (this.readRam(f) - 1) & 0xff;
+                this.acc = result;
+                if (result === 0) {
+                    nextPc.value = (nextPc.value + 1) & 0x03ff;
+                    return 2;
+                }
                 return 1;
-            case 0x0B80:
-                result = (this.readRam(f) - 1) & 0xFF; this.writeRam(f, result);
-                if (result === 0) { nextPc.value = (nextPc.value + 1) & 0x03FF; return 2; }
+            case 0x0b80:
+                result = (this.readRam(f) - 1) & 0xff;
+                this.writeRam(f, result);
+                if (result === 0) {
+                    nextPc.value = (nextPc.value + 1) & 0x03ff;
+                    return 2;
+                }
                 return 1;
-            case 0x0C00: {
+            case 0x0c00: {
                 const c = (status & VM.STATUS_C) !== 0 ? 1 : 0;
                 const val = this.readRam(f);
-                result = ((val >> 1) | (c << 7)) & 0xFF; this.acc = result;
-                if ((val & 0x01) !== 0) status |= VM.STATUS_C; else status &= ~VM.STATUS_C;
+                result = ((val >> 1) | (c << 7)) & 0xff;
+                this.acc = result;
+                if ((val & 0x01) !== 0) status |= VM.STATUS_C;
+                else status &= ~VM.STATUS_C;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
-            case 0x0C80: {
+            case 0x0c80: {
                 const c = (status & VM.STATUS_C) !== 0 ? 1 : 0;
                 const val = this.readRam(f);
-                result = ((val >> 1) | (c << 7)) & 0xFF; this.writeRam(f, result);
-                if ((val & 0x01) !== 0) status |= VM.STATUS_C; else status &= ~VM.STATUS_C;
+                result = ((val >> 1) | (c << 7)) & 0xff;
+                this.writeRam(f, result);
+                if ((val & 0x01) !== 0) status |= VM.STATUS_C;
+                else status &= ~VM.STATUS_C;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
-            case 0x0D00: {
+            case 0x0d00: {
                 const c = (status & VM.STATUS_C) !== 0 ? 1 : 0;
                 const val = this.readRam(f);
-                result = ((val << 1) | c) & 0xFF; this.acc = result;
-                if ((val & 0x80) !== 0) status |= VM.STATUS_C; else status &= ~VM.STATUS_C;
+                result = ((val << 1) | c) & 0xff;
+                this.acc = result;
+                if ((val & 0x80) !== 0) status |= VM.STATUS_C;
+                else status &= ~VM.STATUS_C;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
-            case 0x0D80: {
+            case 0x0d80: {
                 const c = (status & VM.STATUS_C) !== 0 ? 1 : 0;
                 const val = this.readRam(f);
-                result = ((val << 1) | c) & 0xFF; this.writeRam(f, result);
-                if ((val & 0x80) !== 0) status |= VM.STATUS_C; else status &= ~VM.STATUS_C;
+                result = ((val << 1) | c) & 0xff;
+                this.writeRam(f, result);
+                if ((val & 0x80) !== 0) status |= VM.STATUS_C;
+                else status &= ~VM.STATUS_C;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
-            case 0x0E00: {
+            case 0x0e00: {
                 const val = this.readRam(f);
-                this.acc = ((val >> 4) | (val << 4)) & 0xFF;
+                this.acc = ((val >> 4) | (val << 4)) & 0xff;
                 return 1;
             }
-            case 0x0E80: {
+            case 0x0e80: {
                 const val = this.readRam(f);
-                result = ((val >> 4) | (val << 4)) & 0xFF; this.writeRam(f, result);
+                result = ((val >> 4) | (val << 4)) & 0xff;
+                this.writeRam(f, result);
                 return 1;
             }
-            case 0x0F00:
-                result = (this.readRam(f) + 1) & 0xFF; this.acc = result;
-                if (result === 0) { nextPc.value = (nextPc.value + 1) & 0x03FF; return 2; }
+            case 0x0f00:
+                result = (this.readRam(f) + 1) & 0xff;
+                this.acc = result;
+                if (result === 0) {
+                    nextPc.value = (nextPc.value + 1) & 0x03ff;
+                    return 2;
+                }
                 return 1;
-            case 0x0F80:
-                result = (this.readRam(f) + 1) & 0xFF; this.writeRam(f, result);
-                if (result === 0) { nextPc.value = (nextPc.value + 1) & 0x03FF; return 2; }
+            case 0x0f80:
+                result = (this.readRam(f) + 1) & 0xff;
+                this.writeRam(f, result);
+                if (result === 0) {
+                    nextPc.value = (nextPc.value + 1) & 0x03ff;
+                    return 2;
+                }
                 return 1;
             case 0x3100: {
                 const borrowIn = (status & VM.STATUS_C) !== 0 ? 0 : 1;
                 const r = this.subWithFlags(this.readRam(f), this.acc, borrowIn, status);
-                status = r.status; this.acc = r.result & 0xFF;
+                status = r.status;
+                this.acc = r.result & 0xff;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
             case 0x3180: {
                 const borrowIn = (status & VM.STATUS_C) !== 0 ? 0 : 1;
                 const r = this.subWithFlags(this.readRam(f), this.acc, borrowIn, status);
-                status = r.status; this.writeRam(f, r.result & 0xFF);
+                status = r.status;
+                this.writeRam(f, r.result & 0xff);
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
             case 0x3200: {
                 const borrowIn = (status & VM.STATUS_C) !== 0 ? 0 : 1;
                 const r = this.subWithFlags(this.acc, this.readRam(f), borrowIn, status);
-                status = r.status; this.acc = r.result & 0xFF;
+                status = r.status;
+                this.acc = r.result & 0xff;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
             case 0x3280: {
                 const borrowIn = (status & VM.STATUS_C) !== 0 ? 0 : 1;
                 const r = this.subWithFlags(this.acc, this.readRam(f), borrowIn, status);
-                status = r.status; this.writeRam(f, r.result & 0xFF);
+                status = r.status;
+                this.writeRam(f, r.result & 0xff);
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
             case 0x3300: {
                 const r = this.subWithFlags(this.acc, this.readRam(f), 0, status);
-                status = r.status; this.acc = r.result & 0xFF;
+                status = r.status;
+                this.acc = r.result & 0xff;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
             case 0x3380: {
                 const r = this.subWithFlags(this.acc, this.readRam(f), 0, status);
-                status = r.status; this.writeRam(f, r.result & 0xFF);
+                status = r.status;
+                this.writeRam(f, r.result & 0xff);
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
             case 0x3500: {
                 const val = this.readRam(f);
-                result = ((val << 1) | (val >> 7)) & 0xFF; this.acc = result;
+                result = ((val << 1) | (val >> 7)) & 0xff;
+                this.acc = result;
                 return 1;
             }
             case 0x3580: {
                 const val = this.readRam(f);
-                result = ((val << 1) | (val >> 7)) & 0xFF; this.writeRam(f, result);
+                result = ((val << 1) | (val >> 7)) & 0xff;
+                this.writeRam(f, result);
                 return 1;
             }
             case 0x3600: {
                 const val = this.readRam(f);
-                result = ((val >> 1) | (val << 7)) & 0xFF; this.acc = result;
+                result = ((val >> 1) | (val << 7)) & 0xff;
+                this.acc = result;
                 return 1;
             }
             case 0x3680: {
                 const val = this.readRam(f);
-                result = ((val >> 1) | (val << 7)) & 0xFF; this.writeRam(f, result);
+                result = ((val >> 1) | (val << 7)) & 0xff;
+                this.writeRam(f, result);
                 return 1;
             }
             case 0x3700: {
                 const carryIn = (status & VM.STATUS_C) !== 0 ? 1 : 0;
                 const r = this.addWithFlags(this.acc, this.readRam(f), carryIn, status);
-                status = r.status; this.acc = r.result & 0xFF;
+                status = r.status;
+                this.acc = r.result & 0xff;
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
             case 0x3780: {
                 const carryIn = (status & VM.STATUS_C) !== 0 ? 1 : 0;
                 const r = this.addWithFlags(this.acc, this.readRam(f), carryIn, status);
-                status = r.status; this.writeRam(f, r.result & 0xFF);
+                status = r.status;
+                this.writeRam(f, r.result & 0xff);
                 this.writeRam(VM.SFR_STATUS, status);
                 return 1;
             }
-            case 0x3B00: {
-                const val = this.readRam(f); this.acc = val;
-                if (val === 0) { nextPc.value = (nextPc.value + 1) & 0x03FF; return 2; }
-                return 1;
-            }
-            case 0x3B80: {
+            case 0x3b00: {
                 const val = this.readRam(f);
-                if (val === 0) { nextPc.value = (nextPc.value + 1) & 0x03FF; return 2; }
+                this.acc = val;
+                if (val === 0) {
+                    nextPc.value = (nextPc.value + 1) & 0x03ff;
+                    return 2;
+                }
                 return 1;
             }
-            case 0x3F80:
-                this.writeRam(f, 0xFF);
+            case 0x3b80: {
+                const val = this.readRam(f);
+                if (val === 0) {
+                    nextPc.value = (nextPc.value + 1) & 0x03ff;
+                    return 2;
+                }
+                return 1;
+            }
+            case 0x3f80:
+                this.writeRam(f, 0xff);
                 return 1;
         }
 
@@ -897,31 +1034,41 @@ export class VM {
     /**
      * 加法运算并更新标志位
      */
-    private addWithFlags(a: number, b: number, carryIn: number, status: number): { result: number; status: number } {
+    private addWithFlags(
+        a: number,
+        b: number,
+        carryIn: number,
+        status: number,
+    ): { result: number; status: number } {
         const sum = a + b + carryIn;
 
-        if (sum > 0xFF) status |= VM.STATUS_C;
+        if (sum > 0xff) status |= VM.STATUS_C;
         else status &= ~VM.STATUS_C;
 
-        if ((a & 0x0F) + (b & 0x0F) + carryIn > 0x0F) status |= VM.STATUS_DC;
+        if ((a & 0x0f) + (b & 0x0f) + carryIn > 0x0f) status |= VM.STATUS_DC;
         else status &= ~VM.STATUS_DC;
 
-        if ((sum & 0xFF) === 0) status |= VM.STATUS_Z;
+        if ((sum & 0xff) === 0) status |= VM.STATUS_Z;
         else status &= ~VM.STATUS_Z;
 
         return { result: sum, status };
     }
 
-    private subWithFlags(a: number, b: number, borrowIn: number, status: number): { result: number; status: number } {
+    private subWithFlags(
+        a: number,
+        b: number,
+        borrowIn: number,
+        status: number,
+    ): { result: number; status: number } {
         const diff = a - b - borrowIn;
 
         if (diff >= 0) status |= VM.STATUS_C;
         else status &= ~VM.STATUS_C;
 
-        if ((a & 0x0F) >= (b & 0x0F) + borrowIn) status |= VM.STATUS_DC;
+        if ((a & 0x0f) >= (b & 0x0f) + borrowIn) status |= VM.STATUS_DC;
         else status &= ~VM.STATUS_DC;
 
-        if ((diff & 0xFF) === 0) status |= VM.STATUS_Z;
+        if ((diff & 0xff) === 0) status |= VM.STATUS_Z;
         else status &= ~VM.STATUS_Z;
 
         return { result: diff, status };
@@ -1036,7 +1183,7 @@ export class VM {
         // 更新WDT（根据手册867-872行）
         // CONFIG.WDT=1: WDT始终使能，与SWDTEN无关
         // CONFIG.WDT=0: 通过SWDTEN控制WDT
-        if (this.config.wdt || (this.ram[VM.SFR_OSCCON] & 0x02)) {
+        if (this.config.wdt || this.ram[VM.SFR_OSCCON] & 0x02) {
             this.updateWDT(cycles);
         }
 
@@ -1156,7 +1303,7 @@ export class VM {
      */
     private incrementTimer0(): void {
         const tmr0 = this.ram[VM.SFR_TMR0];
-        const newTmr0 = (tmr0 + 1) & 0xFF;
+        const newTmr0 = (tmr0 + 1) & 0xff;
         this.ram[VM.SFR_TMR0] = newTmr0;
         if (newTmr0 === 0) {
             // TIMER0溢出，设置中断标志
@@ -1230,7 +1377,7 @@ export class VM {
         // TMR2递增
         const pr2 = this.ram[VM.SFR_PR2];
         const tmr2 = this.ram[VM.SFR_TMR2];
-        const newTmr2 = (tmr2 + 1) & 0xFF;
+        const newTmr2 = (tmr2 + 1) & 0xff;
         this.ram[VM.SFR_TMR2] = newTmr2;
 
         if (newTmr2 === pr2) {
@@ -1238,7 +1385,7 @@ export class VM {
             this.ram[VM.SFR_TMR2] = 0;
 
             // 更新后分频器 (TOUTPS[3:0])
-            const toutps = (t2con >> 3) & 0x0F;
+            const toutps = (t2con >> 3) & 0x0f;
             const postDivider = toutps + 1; // 1:1 to 1:16
 
             this.timer2Postscaler++;
@@ -1261,7 +1408,7 @@ export class VM {
         const pwmcon1 = this.ram[VM.SFR_PWMCON1];
 
         // 检查是否有任何PWM使能
-        const anyPwmEnabled = (pwmcon0 & 0x1F) !== 0;
+        const anyPwmEnabled = (pwmcon0 & 0x1f) !== 0;
         if (!anyPwmEnabled) return;
 
         // 检查死区使能
@@ -1273,8 +1420,8 @@ export class VM {
         const dtDivRatio = [1, 2, 4, 8][dtDiv];
 
         // 读取死区时间值
-        const pwm01DT = this.ram[VM.SFR_PWM01DT] & 0x3F;  // 6-bit value
-        const pwm23DT = this.ram[VM.SFR_PWM23DT] & 0x3F;  // 6-bit value
+        const pwm01DT = this.ram[VM.SFR_PWM01DT] & 0x3f; // 6-bit value
+        const pwm23DT = this.ram[VM.SFR_PWM23DT] & 0x3f; // 6-bit value
 
         // 更新PWM周期计数器（按分频比递增）
         for (let i = 0; i < cycles; i++) {
@@ -1315,7 +1462,7 @@ export class VM {
                     continue;
                 }
 
-                const period = (ch === 4) ? period4 : period0123;
+                const period = ch === 4 ? period4 : period0123;
                 const duty = this.pwmDutyActual[`pwm${ch}` as keyof typeof this.pwmDutyActual];
 
                 // PWM输出逻辑：计数器 <= duty时输出高电平（根据手册公式：脉冲宽度 = (PWMDx[9:0]+1)*THSI*(CLKDIV分频值)）
@@ -1348,13 +1495,18 @@ export class VM {
      * 应用死区延时到互补PWM输出对
      * 根据手册10.7节：当使能互补输出模式后，自动使能死区延时功能
      * 死区时间计算公式：td = (PWMxxDT[5:0] + 1) * THSI * (DT_DIV分频值)
-     * 
+     *
      * @param ch1 第一个通道 (e.g., PWM0 or PWM2) - 主通道
      * @param ch2 第二个通道 (e.g., PWM1 or PWM3) - 互补通道
      * @param deadTimeValue 死区时间值 (6-bit)
      * @param dtDivRatio 死区时钟分频比
      */
-    private applyDeadTime(ch1: number, ch2: number, deadTimeValue: number, dtDivRatio: number): void {
+    private applyDeadTime(
+        ch1: number,
+        ch2: number,
+        deadTimeValue: number,
+        dtDivRatio: number,
+    ): void {
         const deadTimeCycles = (deadTimeValue + 1) * dtDivRatio;
         const pairIndex = ch1 === 0 ? 'pwm01' : 'pwm23';
 
@@ -1368,8 +1520,8 @@ export class VM {
 
         // 检测主通道边沿变化
         const prevCh1 = this.pwmLastState[pairIndex];
-        const risingEdge = !prevCh1 && rawCh1;  // 上升沿
-        const fallingEdge = prevCh1 && !rawCh1;  // 下降沿
+        const risingEdge = !prevCh1 && rawCh1; // 上升沿
+        const fallingEdge = prevCh1 && !rawCh1; // 下降沿
 
         // 保存当前状态供下次比较
         this.pwmLastState[pairIndex] = rawCh1;
@@ -1380,14 +1532,14 @@ export class VM {
 
         if (risingEdge) {
             // 主通道上升沿：主通道立即变高，互补通道保持低电平直到死区结束
-            this.pwmOutputs[ch1] = true;   // 主通道立即变高
-            this.pwmOutputs[ch2] = false;  // 互补通道保持低
-            this.pwmDeadTimeCounters[pairIndex] = deadTimeCycles;  // 启动死区计时
+            this.pwmOutputs[ch1] = true; // 主通道立即变高
+            this.pwmOutputs[ch2] = false; // 互补通道保持低
+            this.pwmDeadTimeCounters[pairIndex] = deadTimeCycles; // 启动死区计时
         } else if (fallingEdge) {
             // 主通道下降沿：主通道立即变低，互补通道保持低电平直到死区结束
-            this.pwmOutputs[ch1] = false;  // 主通道立即变低
-            this.pwmOutputs[ch2] = false;  // 互补通道保持低
-            this.pwmDeadTimeCounters[pairIndex] = deadTimeCycles;  // 启动死区计时
+            this.pwmOutputs[ch1] = false; // 主通道立即变低
+            this.pwmOutputs[ch2] = false; // 互补通道保持低
+            this.pwmDeadTimeCounters[pairIndex] = deadTimeCycles; // 启动死区计时
         } else if (this.pwmDeadTimeCounters[pairIndex] > 0) {
             // 在死区期间，互补通道保持低电平
             this.pwmOutputs[ch2] = false;
@@ -1409,7 +1561,7 @@ export class VM {
         const pwmcon1 = this.ram[VM.SFR_PWMCON1];
 
         // 检查是否有任何PWM使能
-        if ((pwmcon0 & 0x1F) === 0) return null;
+        if ((pwmcon0 & 0x1f) === 0) return null;
 
         const ioSel = (pwmcon1 >> 6) & 0x01;
         let pwmChannel: number | null = null;
@@ -1450,7 +1602,7 @@ export class VM {
     /**
      * 计算单个引脚的实际电平状态（不含PWM检查）
      * 根据手册第6章：综合考虑TRIS、ODCON、上下拉、外部驱动等因素
-     * 
+     *
      * @param port 端口('A'或'B')
      * @param pin 引脚号
      * @param latchValue RAM中PORT寄存器的锁存器值
@@ -1460,10 +1612,10 @@ export class VM {
         if (port === 'A') {
             if (pin < 0 || pin > 5) return 0;
 
-            const trisa = this.ram[VM.SFR_TRISA] & 0x3F;
-            const wpua = this.ram[VM.SFR_WPUA] & 0x3F;
-            const wpda = this.ram[VM.SFR_WPDA] & 0x3F;
-            const odcona = this.ram[VM.SFR_ODCONA] & 0x3F;
+            const trisa = this.ram[VM.SFR_TRISA] & 0x3f;
+            const wpua = this.ram[VM.SFR_WPUA] & 0x3f;
+            const wpda = this.ram[VM.SFR_WPDA] & 0x3f;
+            const odcona = this.ram[VM.SFR_ODCONA] & 0x3f;
 
             const isInput = (trisa & (1 << pin)) !== 0;
             const latchHigh = (latchValue & (1 << pin)) !== 0;
@@ -1477,7 +1629,7 @@ export class VM {
                 // 输入模式：考虑上下拉和外部驱动
                 if (!hasPullUp && !hasPullDown) {
                     // 无上下拉：仅当外部显式驱动为高时才为高
-                    return (isExternallyDriven && externalHigh) ? 1 : 0;
+                    return isExternallyDriven && externalHigh ? 1 : 0;
                 } else if (hasPullUp && !hasPullDown) {
                     // 有上拉：默认高，外部可拉低
                     if (isExternallyDriven) {
@@ -1524,18 +1676,18 @@ export class VM {
             const isInput = (trisb & (1 << pin)) !== 0;
             const latchHigh = (latchValue & (1 << pin)) !== 0;
             // RB3固定开漏（手册6.3.2）
-            const isOpenDrain = (pin === 3) || ((odconb & (1 << pin)) !== 0);
+            const isOpenDrain = pin === 3 || (odconb & (1 << pin)) !== 0;
             // RB3无上拉禁用特性，其他引脚输出时上拉禁用（手册6.3.3注）
             const hasPullUp = (wpub & (1 << pin)) !== 0;
             // RB3无下拉（手册6.3.4注）
-            const hasPullDown = (pin !== 3) && ((wpdb & (1 << pin)) !== 0);
+            const hasPullDown = pin !== 3 && (wpdb & (1 << pin)) !== 0;
             const externalHigh = (this.externalPinStateB & (1 << pin)) !== 0;
             const isExternallyDriven = (this.externallyDrivenB & (1 << pin)) !== 0;
 
             if (isInput) {
                 // 输入模式：与PORTA相同逻辑
                 if (!hasPullUp && !hasPullDown) {
-                    return (isExternallyDriven && externalHigh) ? 1 : 0;
+                    return isExternallyDriven && externalHigh ? 1 : 0;
                 } else if (hasPullUp && !hasPullDown) {
                     if (isExternallyDriven) {
                         return externalHigh ? 1 : 0;
@@ -1601,7 +1753,7 @@ export class VM {
                 posVoltage = this.compAnalogInputs.cmpPlus; // Use injected analog value
             } else {
                 const portb = this.ram[VM.SFR_PORTB];
-                posVoltage = ((portb >> 1) & 0x01) ? 1.0 : 0.0; // Digital read: 0 or 1
+                posVoltage = (portb >> 1) & 0x01 ? 1.0 : 0.0; // Digital read: 0 or 1
             }
         } else {
             // 内部电阻分压VR
@@ -1618,7 +1770,7 @@ export class VM {
                     negVoltage = this.compAnalogInputs.cmp0Minus; // Use injected analog value
                 } else {
                     const portb0 = this.ram[VM.SFR_PORTB];
-                    negVoltage = ((portb0 >> 2) & 0x01) ? 1.0 : 0.0; // Digital read
+                    negVoltage = (portb0 >> 2) & 0x01 ? 1.0 : 0.0; // Digital read
                 }
                 break;
             case 1: // CMP1- (RB4)
@@ -1626,7 +1778,7 @@ export class VM {
                     negVoltage = this.compAnalogInputs.cmp1Minus; // Use injected analog value
                 } else {
                     const portb1 = this.ram[VM.SFR_PORTB];
-                    negVoltage = ((portb1 >> 4) & 0x01) ? 1.0 : 0.0; // Digital read
+                    negVoltage = (portb1 >> 4) & 0x01 ? 1.0 : 0.0; // Digital read
                 }
                 break;
             case 2: // CMP2- (RB5)
@@ -1634,7 +1786,7 @@ export class VM {
                     negVoltage = this.compAnalogInputs.cmp2Minus; // Use injected analog value
                 } else {
                     const portb2 = this.ram[VM.SFR_PORTB];
-                    negVoltage = ((portb2 >> 5) & 0x01) ? 1.0 : 0.0; // Digital read
+                    negVoltage = (portb2 >> 5) & 0x01 ? 1.0 : 0.0; // Digital read
                 }
                 break;
             case 3: // CMP3- (RB1)
@@ -1642,7 +1794,7 @@ export class VM {
                     negVoltage = this.compAnalogInputs.cmp3Minus; // Use injected analog value
                 } else {
                     const portb3 = this.ram[VM.SFR_PORTB];
-                    negVoltage = ((portb3 >> 1) & 0x01) ? 1.0 : 0.0; // Digital read
+                    negVoltage = (portb3 >> 1) & 0x01 ? 1.0 : 0.0; // Digital read
                 }
                 break;
             case 4: // 内部电阻分压VR
@@ -1708,7 +1860,8 @@ export class VM {
 
             // 内联 setPinOutput 逻辑：检查 TRIS 和 ODCON
             const trisb = this.ram[VM.SFR_TRISB];
-            if (!((trisb >> 0) & 0x01)) { // RB0 配置为输出模式
+            if (!((trisb >> 0) & 0x01)) {
+                // RB0 配置为输出模式
                 let portb = this.ram[VM.SFR_PORTB];
                 if (outputValue) {
                     // RB0 不是 RB3，需要检查 ODCON
@@ -1733,7 +1886,7 @@ export class VM {
     private calculateResistorDivider(cmpcon1: number): number {
         const rbiasH = (cmpcon1 >> 5) & 0x01;
         const rbiasL = (cmpcon1 >> 4) & 0x01;
-        const lvds = cmpcon1 & 0x0F;
+        const lvds = cmpcon1 & 0x0f;
 
         // 归一化电压值（相对于VDD）
         let vr = 0;
@@ -1773,7 +1926,7 @@ export class VM {
             }
 
             if (actualValue) {
-                portAValue |= (1 << i);
+                portAValue |= 1 << i;
             }
         }
 
@@ -1792,7 +1945,7 @@ export class VM {
             }
 
             if (actualValue) {
-                portBValue |= (1 << i);
+                portBValue |= 1 << i;
             }
         }
 
@@ -1807,7 +1960,7 @@ export class VM {
         // 休眠模式下WDT继续运行（根据手册867-872行）
         // CONFIG.WDT=1: WDT始终使能，与SWDTEN无关
         // CONFIG.WDT=0: 通过SWDTEN控制WDT
-        if (this.config.wdt || (this.ram[VM.SFR_OSCCON] & 0x02)) {
+        if (this.config.wdt || this.ram[VM.SFR_OSCCON] & 0x02) {
             this.updateWDT(1);
         }
 
@@ -1832,21 +1985,21 @@ export class VM {
         const pir1 = this.ram[VM.SFR_PIR1];
 
         // 检查WDT唤醒（根据手册867-872行）
-        if (this.config.wdt || (this.ram[VM.SFR_OSCCON] & 0x02)) {
+        if (this.config.wdt || this.ram[VM.SFR_OSCCON] & 0x02) {
             // WDT溢出会自动唤醒
         }
 
         // 检查电平变化中断
-        if ((intcon & VM.INTCON_RBIE) && (intcon & VM.INTCON_RBIF)) {
+        if (intcon & VM.INTCON_RBIE && intcon & VM.INTCON_RBIF) {
             this.wakeup();
         }
 
-        if ((pir1 & VM.PIR1_RAIF) && (this.ram[VM.SFR_PIE1] & VM.PIE1_RAIE)) {
+        if (pir1 & VM.PIR1_RAIF && this.ram[VM.SFR_PIE1] & VM.PIE1_RAIE) {
             this.wakeup();
         }
 
         // 检查比较器中断
-        if ((pir1 & VM.PIR1_CMPIF) && (this.ram[VM.SFR_PIE1] & VM.PIE1_CMPIE)) {
+        if (pir1 & VM.PIR1_CMPIF && this.ram[VM.SFR_PIE1] & VM.PIE1_CMPIE) {
             this.wakeup();
         }
     }
@@ -1897,44 +2050,44 @@ export class VM {
         const pir1 = this.ram[VM.SFR_PIR1];
 
         // 检查TIMER0中断
-        if ((intcon & VM.INTCON_T0IE) && (intcon & VM.INTCON_T0IF)) {
+        if (intcon & VM.INTCON_T0IE && intcon & VM.INTCON_T0IF) {
             this.triggerInterrupt();
             return;
         }
 
         // 检查外部中断
-        if ((intcon & VM.INTCON_INTE) && (intcon & VM.INTCON_INTF)) {
+        if (intcon & VM.INTCON_INTE && intcon & VM.INTCON_INTF) {
             this.triggerInterrupt();
             return;
         }
 
         // 检查PORTB电平变化中断
-        if ((intcon & VM.INTCON_RBIE) && (intcon & VM.INTCON_RBIF)) {
+        if (intcon & VM.INTCON_RBIE && intcon & VM.INTCON_RBIF) {
             this.triggerInterrupt();
             return;
         }
 
         if (peie) {
             // 检查比较器中断
-            if ((pie1 & VM.PIE1_CMPIE) && (pir1 & VM.PIR1_CMPIF)) {
+            if (pie1 & VM.PIE1_CMPIE && pir1 & VM.PIR1_CMPIF) {
                 this.triggerInterrupt();
                 return;
             }
 
             // 检查PWM中断
-            if ((pie1 & VM.PIE1_PWMIE) && (pir1 & VM.PIR1_PWMIF)) {
+            if (pie1 & VM.PIE1_PWMIE && pir1 & VM.PIR1_PWMIF) {
                 this.triggerInterrupt();
                 return;
             }
 
             // 检查PORTA电平变化中断
-            if ((pie1 & VM.PIE1_RAIE) && (pir1 & VM.PIR1_RAIF)) {
+            if (pie1 & VM.PIE1_RAIE && pir1 & VM.PIR1_RAIF) {
                 this.triggerInterrupt();
                 return;
             }
 
             // 检查TIMER2中断
-            if ((pie1 & VM.PIE1_TMR2IE) && (pir1 & VM.PIR1_TMR2IF)) {
+            if (pie1 & VM.PIE1_TMR2IE && pir1 & VM.PIR1_TMR2IF) {
                 this.triggerInterrupt();
                 return;
             }
@@ -1952,14 +2105,14 @@ export class VM {
 
         // 保存当前PC到堆栈
         if (this.sp < VM.STACK_SIZE) {
-            this.stack[this.sp] = this.pc & 0x03FF;
+            this.stack[this.sp] = this.pc & 0x03ff;
             this.sp++;
         } else {
             // 堆栈溢出，覆盖最早的条目
             for (let i = 0; i < VM.STACK_SIZE - 1; i++) {
                 this.stack[i] = this.stack[i + 1];
             }
-            this.stack[VM.STACK_SIZE - 1] = this.pc & 0x03FF;
+            this.stack[VM.STACK_SIZE - 1] = this.pc & 0x03ff;
         }
 
         // 跳转到中断向量
@@ -1986,13 +2139,13 @@ export class VM {
 
             // Update external pin state (simulates physical connection to the pin)
             if (value) {
-                this.externalPinStateA |= (1 << pin);
+                this.externalPinStateA |= 1 << pin;
             } else {
                 this.externalPinStateA &= ~(1 << pin);
             }
 
             // Mark this pin as explicitly driven by external source
-            this.externallyDrivenA |= (1 << pin);
+            this.externallyDrivenA |= 1 << pin;
 
             // Check电平变化中断 - 根据手册6.2.5节
             // The interrupt detects mismatch between current pin value and last read PORTA value
@@ -2023,13 +2176,13 @@ export class VM {
 
             // Update external pin state (simulates physical connection to the pin)
             if (value) {
-                this.externalPinStateB |= (1 << pin);
+                this.externalPinStateB |= 1 << pin;
             } else {
                 this.externalPinStateB &= ~(1 << pin);
             }
 
             // Mark this pin as explicitly driven by external source
-            this.externallyDrivenB |= (1 << pin);
+            this.externallyDrivenB |= 1 << pin;
 
             // 检查RB0/INT外部中断 - 根据手册7.2.1节和2.6节OPTION_REG INTEDG位
             if (pin === 0) {
@@ -2079,7 +2232,10 @@ export class VM {
      * @param pin 比较器输入引脚名称
      * @param normalizedValue 归一化电压值 (0.0 = GND, 1.0 = VDD)
      */
-    setComparatorInput(pin: 'CMP_PLUS' | 'CMP0_MINUS' | 'CMP1_MINUS' | 'CMP2_MINUS' | 'CMP3_MINUS', normalizedValue: number): void {
+    setComparatorInput(
+        pin: 'CMP_PLUS' | 'CMP0_MINUS' | 'CMP1_MINUS' | 'CMP2_MINUS' | 'CMP3_MINUS',
+        normalizedValue: number,
+    ): void {
         // 限制范围在 0.0-1.0
         const clampedValue = Math.max(0.0, Math.min(1.0, normalizedValue));
 
@@ -2111,7 +2267,7 @@ export class VM {
      */
     reset(source: ResetSource = ResetSource.POR): void {
         // 清零通用RAM(0x20-0x6F, 0x70-0x7F快速存储区)
-        for (let i = 0x20; i <= 0x7F; i++) {
+        for (let i = 0x20; i <= 0x7f; i++) {
             this.ram[i] = 0x00;
             this.ram[i + 0x80] = 0x00; // Bank1对应位置
         }
@@ -2144,7 +2300,7 @@ export class VM {
                 break;
         }
         this.ram[VM.SFR_STATUS] = statusInit;
-        this.ram[VM.SFR_TRISB] = 0xFF;
+        this.ram[VM.SFR_TRISB] = 0xff;
         this.ram[VM.SFR_WPDB] = 0b00000000; // WPDB3未用
         this.ram[VM.SFR_WPUB] = 0x00;
         this.ram[VM.SFR_IOCB] = 0x00;
@@ -2155,7 +2311,7 @@ export class VM {
         this.ram[VM.SFR_PIE1] = 0x00;
         this.ram[VM.SFR_CMPCON0] = 0x00;
         this.ram[VM.SFR_CMPCON1] = 0x00;
-        this.ram[VM.SFR_PR2] = 0xFF;
+        this.ram[VM.SFR_PR2] = 0xff;
         this.ram[VM.SFR_TMR2] = 0x00;
         this.ram[VM.SFR_T2CON] = 0x00;
         this.ram[VM.SFR_OSCCON] = 0b10100010; // IRCF=101(4分频), SWDTEN=1 (手册复位值)
@@ -2218,7 +2374,13 @@ export class VM {
         this.externalPinStateB = 0;
         this.externallyDrivenA = 0;
         this.externallyDrivenB = 0;
-        this.compAnalogInputs = { cmpPlus: 0, cmp0Minus: 0, cmp1Minus: 0, cmp2Minus: 0, cmp3Minus: 0 };
+        this.compAnalogInputs = {
+            cmpPlus: 0,
+            cmp0Minus: 0,
+            cmp1Minus: 0,
+            cmp2Minus: 0,
+            cmp3Minus: 0,
+        };
 
         // 初始化运行状态
         this.cycles = 0;
@@ -2298,7 +2460,7 @@ export class VM {
 
             // System execution state
             cycles: this.cycles,
-            sleeping: this.sleeping
+            sleeping: this.sleeping,
         };
     }
 }

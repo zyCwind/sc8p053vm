@@ -12,82 +12,87 @@ export interface DebugInfo {
 // Format reference: SC8P053 User Manual Chapter 13
 // All opcodes use direct bitwise encoding (no generic op() function)
 const OPCODES: { [key: string]: number } = {
-    NOP: 0x0000,  // 0000000000000000
-    RET: 0x0008,  // 0000000000001000
-    RETI: 0x0009,  // 0000000000001001
-    STOP: 0x0063,  // 0000000001100011
-    CLRWDT: 0x0064,  // 0000000001100100
-    LD_F_A: 0x0080,  // 000000001 ffff ffff  f=7-bit RAM address
-    CLRA: 0x0100,  // 0000000100000000
-    CLR: 0x0180,  // 000000011 ffff ffff  f=7-bit RAM address
-    SUBA: 0x0200,  // 000000100 ffff ffff  f=7-bit RAM address
-    SUBR: 0x0280,  // 000000101 ffff ffff  f=7-bit RAM address
-    DECA: 0x0300,  // 000000110 ffff ffff  f=7-bit RAM address
-    DECR: 0x0380,  // 000000111 ffff ffff  f=7-bit RAM address
-    ORA: 0x0400,  // 000001000 ffff ffff  f=7-bit RAM address
-    ORR: 0x0480,  // 000001001 ffff ffff  f=7-bit RAM address
-    ANDA: 0x0500,  // 000001010 ffff ffff  f=7-bit RAM address
-    ANDR: 0x0580,  // 000001011 ffff ffff  f=7-bit RAM address
-    XORA: 0x0600,  // 000001100 ffff ffff  f=7-bit RAM address
-    XORR: 0x0680,  // 000001101 ffff ffff  f=7-bit RAM address
-    ADDA: 0x0700,  // 000001110 ffff ffff  f=7-bit RAM address
-    ADDR: 0x0780,  // 000001111 ffff ffff  f=7-bit RAM address
-    LD_A_F: 0x0800,  // 000010000 ffff ffff  f=7-bit RAM address
-    TESTZ: 0x0880,  // 000010001 ffff ffff  f=7-bit RAM address
-    COMA: 0x0900,  // 000010010 ffff ffff  f=7-bit RAM address
-    COMR: 0x0980,  // 000010011 ffff ffff  f=7-bit RAM address
-    INCA: 0x0A00,  // 000010100 ffff ffff  f=7-bit RAM address
-    INCR: 0x0A80,  // 000010101 ffff ffff  f=7-bit RAM address
-    SZDECA: 0x0B00,  // 000010110 ffff ffff  f=7-bit RAM address
-    SZDECR: 0x0B80,  // 000010111 ffff ffff  f=7-bit RAM address
-    RRCA: 0x0C00,  // 000011000 ffff ffff  f=7-bit RAM address
-    RRCR: 0x0C80,  // 000011001 ffff ffff  f=7-bit RAM address
-    RLCA: 0x0D00,  // 000011010 ffff ffff  f=7-bit RAM address
-    RLCR: 0x0D80,  // 000011011 ffff ffff  f=7-bit RAM address
-    SWAPA: 0x0E00,  // 000011100 ffff ffff  f=7-bit RAM address
-    SWAPR: 0x0E80,  // 000011101 ffff ffff  f=7-bit RAM address
-    SZINCA: 0x0F00,  // 000011110 ffff ffff  f=7-bit RAM address
-    SZINCR: 0x0F80,  // 000011111 ffff ffff  f=7-bit RAM address
-    CLRB: 0x1000,  // 000100 bb bfff ffff  b=3-bit position, f=7-bit RAM address
-    SETB: 0x1400,  // 000101 bb bfff ffff  b=3-bit position, f=7-bit RAM address
-    SZB: 0x1800,  // 000110 bb bfff ffff  b=3-bit position, f=7-bit RAM address
-    SNZB: 0x1C00,  // 000111 bb bfff ffff  b=3-bit position, f=7-bit RAM address
-    CALL: 0x2000,  // 001000 aa aaaa aaaa  a=10-bit ROM address
-    JP: 0x2800,  // 001010 aa aaaa aaaa  a=10-bit ROM address
-    LDIA: 0x3000,  // 00110000 iiii iiii  i=8-bit immediate
-    SUBCA: 0x3100,  // 001100010 ffff ffff  f=7-bit RAM address
-    SUBCR: 0x3180,  // 001100011 ffff ffff  f=7-bit RAM address
-    HSUBCA: 0x3200,  // 001100100 ffff ffff  f=7-bit RAM address
-    HSUBCR: 0x3280,  // 001100101 ffff ffff  f=7-bit RAM address
-    HSUBA: 0x3300,  // 001100110 ffff ffff  f=7-bit RAM address
-    HSUBR: 0x3380,  // 001100111 ffff ffff  f=7-bit RAM address
-    RET_I: 0x3400,  // 00110100 iiii iiii  i=8-bit immediate
-    RLA: 0x3500,  // 001101010 ffff ffff  f=7-bit RAM address
-    RLR: 0x3580,  // 001101011 ffff ffff  f=7-bit RAM address
-    RRA: 0x3600,  // 001101100 ffff ffff  f=7-bit RAM address
-    RRR: 0x3680,  // 001101101 ffff ffff  f=7-bit RAM address
-    ADDCA: 0x3700,  // 001101110 ffff ffff  f=7-bit RAM address
-    ADDCR: 0x3780,  // 001101111 ffff ffff  f=7-bit RAM address
-    ORIA: 0x3800,  // 00111000 iiii iiii  i=8-bit immediate
-    ANDIA: 0x3900,  // 00111001 iiii iiii  i=8-bit immediate
-    XORIA: 0x3A00,  // 00111010 iiii iiii  i=8-bit immediate
-    SZA: 0x3B00,  // 001110110 ffff ffff  f=7-bit RAM address
-    SZR: 0x3B80,  // 001110111 ffff ffff  f=7-bit RAM address
-    SUBIA: 0x3C00,  // 00111100 iiii iiii  i=8-bit immediate
-    HSUBIA: 0x3D00,  // 00111101 iiii iiii  i=8-bit immediate
-    ADDIA: 0x3E00,  // 00111110 iiii iiii  i=8-bit immediate
-    SET: 0x3F80  // 001111111 ffff ffff  f=7-bit RAM address
+    NOP: 0x0000, // 0000000000000000
+    RET: 0x0008, // 0000000000001000
+    RETI: 0x0009, // 0000000000001001
+    STOP: 0x0063, // 0000000001100011
+    CLRWDT: 0x0064, // 0000000001100100
+    LD_F_A: 0x0080, // 000000001 ffff ffff  f=7-bit RAM address
+    CLRA: 0x0100, // 0000000100000000
+    CLR: 0x0180, // 000000011 ffff ffff  f=7-bit RAM address
+    SUBA: 0x0200, // 000000100 ffff ffff  f=7-bit RAM address
+    SUBR: 0x0280, // 000000101 ffff ffff  f=7-bit RAM address
+    DECA: 0x0300, // 000000110 ffff ffff  f=7-bit RAM address
+    DECR: 0x0380, // 000000111 ffff ffff  f=7-bit RAM address
+    ORA: 0x0400, // 000001000 ffff ffff  f=7-bit RAM address
+    ORR: 0x0480, // 000001001 ffff ffff  f=7-bit RAM address
+    ANDA: 0x0500, // 000001010 ffff ffff  f=7-bit RAM address
+    ANDR: 0x0580, // 000001011 ffff ffff  f=7-bit RAM address
+    XORA: 0x0600, // 000001100 ffff ffff  f=7-bit RAM address
+    XORR: 0x0680, // 000001101 ffff ffff  f=7-bit RAM address
+    ADDA: 0x0700, // 000001110 ffff ffff  f=7-bit RAM address
+    ADDR: 0x0780, // 000001111 ffff ffff  f=7-bit RAM address
+    LD_A_F: 0x0800, // 000010000 ffff ffff  f=7-bit RAM address
+    TESTZ: 0x0880, // 000010001 ffff ffff  f=7-bit RAM address
+    COMA: 0x0900, // 000010010 ffff ffff  f=7-bit RAM address
+    COMR: 0x0980, // 000010011 ffff ffff  f=7-bit RAM address
+    INCA: 0x0a00, // 000010100 ffff ffff  f=7-bit RAM address
+    INCR: 0x0a80, // 000010101 ffff ffff  f=7-bit RAM address
+    SZDECA: 0x0b00, // 000010110 ffff ffff  f=7-bit RAM address
+    SZDECR: 0x0b80, // 000010111 ffff ffff  f=7-bit RAM address
+    RRCA: 0x0c00, // 000011000 ffff ffff  f=7-bit RAM address
+    RRCR: 0x0c80, // 000011001 ffff ffff  f=7-bit RAM address
+    RLCA: 0x0d00, // 000011010 ffff ffff  f=7-bit RAM address
+    RLCR: 0x0d80, // 000011011 ffff ffff  f=7-bit RAM address
+    SWAPA: 0x0e00, // 000011100 ffff ffff  f=7-bit RAM address
+    SWAPR: 0x0e80, // 000011101 ffff ffff  f=7-bit RAM address
+    SZINCA: 0x0f00, // 000011110 ffff ffff  f=7-bit RAM address
+    SZINCR: 0x0f80, // 000011111 ffff ffff  f=7-bit RAM address
+    CLRB: 0x1000, // 000100 bb bfff ffff  b=3-bit position, f=7-bit RAM address
+    SETB: 0x1400, // 000101 bb bfff ffff  b=3-bit position, f=7-bit RAM address
+    SZB: 0x1800, // 000110 bb bfff ffff  b=3-bit position, f=7-bit RAM address
+    SNZB: 0x1c00, // 000111 bb bfff ffff  b=3-bit position, f=7-bit RAM address
+    CALL: 0x2000, // 001000 aa aaaa aaaa  a=10-bit ROM address
+    JP: 0x2800, // 001010 aa aaaa aaaa  a=10-bit ROM address
+    LDIA: 0x3000, // 00110000 iiii iiii  i=8-bit immediate
+    SUBCA: 0x3100, // 001100010 ffff ffff  f=7-bit RAM address
+    SUBCR: 0x3180, // 001100011 ffff ffff  f=7-bit RAM address
+    HSUBCA: 0x3200, // 001100100 ffff ffff  f=7-bit RAM address
+    HSUBCR: 0x3280, // 001100101 ffff ffff  f=7-bit RAM address
+    HSUBA: 0x3300, // 001100110 ffff ffff  f=7-bit RAM address
+    HSUBR: 0x3380, // 001100111 ffff ffff  f=7-bit RAM address
+    RET_I: 0x3400, // 00110100 iiii iiii  i=8-bit immediate
+    RLA: 0x3500, // 001101010 ffff ffff  f=7-bit RAM address
+    RLR: 0x3580, // 001101011 ffff ffff  f=7-bit RAM address
+    RRA: 0x3600, // 001101100 ffff ffff  f=7-bit RAM address
+    RRR: 0x3680, // 001101101 ffff ffff  f=7-bit RAM address
+    ADDCA: 0x3700, // 001101110 ffff ffff  f=7-bit RAM address
+    ADDCR: 0x3780, // 001101111 ffff ffff  f=7-bit RAM address
+    ORIA: 0x3800, // 00111000 iiii iiii  i=8-bit immediate
+    ANDIA: 0x3900, // 00111001 iiii iiii  i=8-bit immediate
+    XORIA: 0x3a00, // 00111010 iiii iiii  i=8-bit immediate
+    SZA: 0x3b00, // 001110110 ffff ffff  f=7-bit RAM address
+    SZR: 0x3b80, // 001110111 ffff ffff  f=7-bit RAM address
+    SUBIA: 0x3c00, // 00111100 iiii iiii  i=8-bit immediate
+    HSUBIA: 0x3d00, // 00111101 iiii iiii  i=8-bit immediate
+    ADDIA: 0x3e00, // 00111110 iiii iiii  i=8-bit immediate
+    SET: 0x3f80, // 001111111 ffff ffff  f=7-bit RAM address
 };
 
 class SC8P053Assembler {
     private lines: Array<{ text: string; sourceLine: number; orgAddress?: number }> = [];
     private labels: Map<string, number> = new Map();
-    private instructions: Array<{ line: number; sourceLine: number; opcode: string; args: string[] }> = [];
-    private currentAddress: number = 0;
+    private instructions: Array<{
+        line: number;
+        sourceLine: number;
+        opcode: string;
+        args: string[];
+    }> = [];
+    private currentAddress = 0;
 
     // Debug info: instruction index -> source line number
     private debugInfo = {
-        lineNoMap: new Map()
+        lineNoMap: new Map(),
     };
 
     /**
@@ -119,7 +124,7 @@ class SC8P053Assembler {
         this.instructions = [];
         this.currentAddress = 0;
         this.debugInfo = {
-            lineNoMap: new Map()
+            lineNoMap: new Map(),
         };
     }
 
@@ -164,7 +169,9 @@ class SC8P053Assembler {
             if (orgMatch) {
                 const orgAddress = this.evaluateExpression(orgMatch[1].trim());
                 if (orgAddress < this.currentAddress) {
-                    throw new Error(`ORG address 0x${orgAddress.toString(16)} is less than current address 0x${this.currentAddress.toString(16)}`);
+                    throw new Error(
+                        `ORG address 0x${orgAddress.toString(16)} is less than current address 0x${this.currentAddress.toString(16)}`,
+                    );
                 }
                 // Store ORG info in lines array for firstPass to process
                 this.lines.push({ text: line, sourceLine: sourceLineNum, orgAddress });
@@ -215,7 +222,7 @@ class SC8P053Assembler {
                         line: this.currentAddress,
                         sourceLine: sourceLine,
                         opcode: 'DB',
-                        args: [val]
+                        args: [val],
                     });
                     this.currentAddress++;
                 }
@@ -231,7 +238,7 @@ class SC8P053Assembler {
                         line: this.currentAddress,
                         sourceLine: sourceLine,
                         opcode: 'DW',
-                        args: [val]
+                        args: [val],
                     });
                     this.currentAddress++;
                 }
@@ -245,13 +252,16 @@ class SC8P053Assembler {
 
             // Join remaining parts and then split by comma
             const argsStr = parts.slice(1).join(' ').trim();
-            const args = argsStr.split(',').map((arg: string) => arg.trim()).filter((arg: string) => arg.length > 0);
+            const args = argsStr
+                .split(',')
+                .map((arg: string) => arg.trim())
+                .filter((arg: string) => arg.length > 0);
 
             this.instructions.push({
                 line: this.currentAddress,
                 sourceLine: sourceLine,
                 opcode,
-                args
+                args,
             });
 
             this.currentAddress++;
@@ -269,7 +279,7 @@ class SC8P053Assembler {
             }
         }
 
-        const rom: number[] = new Array(maxAddress + 1).fill(0xFFFF);
+        const rom: number[] = new Array(maxAddress + 1).fill(0xffff);
 
         for (const instr of this.instructions) {
             const encoded = this.encodeInstruction(instr.opcode, instr.args);
@@ -288,8 +298,10 @@ class SC8P053Assembler {
         // Handle DB directive (Define Byte) - store as 16-bit value with high byte = 0
         if (opcode === 'DB') {
             const byteValue = this.evaluateExpression(args[0]);
-            if (byteValue < 0 || byteValue > 0xFF) {
-                throw new Error(`DB value out of range (0-255): ${args[0]} = 0x${byteValue.toString(16)}`);
+            if (byteValue < 0 || byteValue > 0xff) {
+                throw new Error(
+                    `DB value out of range (0-255): ${args[0]} = 0x${byteValue.toString(16)}`,
+                );
             }
             return byteValue; // Store byte in low 8 bits
         }
@@ -297,8 +309,10 @@ class SC8P053Assembler {
         // Handle DW directive (Define Word) - store full 16-bit value
         if (opcode === 'DW') {
             const wordValue = this.evaluateExpression(args[0]);
-            if (wordValue < 0 || wordValue > 0xFFFF) {
-                throw new Error(`DW value out of range (0-65535): ${args[0]} = 0x${wordValue.toString(16)}`);
+            if (wordValue < 0 || wordValue > 0xffff) {
+                throw new Error(
+                    `DW value out of range (0-65535): ${args[0]} = 0x${wordValue.toString(16)}`,
+                );
             }
             return wordValue; // Store full 16-bit value
         }
@@ -310,18 +324,20 @@ class SC8P053Assembler {
                 const arg2 = args[1].toUpperCase();
                 if (arg1 === 'A') {
                     const addr = this.resolveOperand(args[1]);
-                    if (addr < 0 || addr > 0xFF) {
+                    if (addr < 0 || addr > 0xff) {
                         throw new Error(`Address out of range (0-255) for LD: ${addr}`);
                     }
-                    return OPCODES['LD_A_F'] | (addr & 0x7F);
+                    return OPCODES['LD_A_F'] | (addr & 0x7f);
                 } else if (arg2 === 'A') {
                     const addr = this.resolveOperand(args[0]);
-                    if (addr < 0 || addr > 0xFF) {
+                    if (addr < 0 || addr > 0xff) {
                         throw new Error(`Address out of range (0-255) for LD: ${addr}`);
                     }
-                    return OPCODES['LD_F_A'] | (addr & 0x7F);
+                    return OPCODES['LD_F_A'] | (addr & 0x7f);
                 } else {
-                    throw new Error(`Invalid LD instruction format: LD ${args[0]},${args[1]}. Expected LD A,f or LD f,A`);
+                    throw new Error(
+                        `Invalid LD instruction format: LD ${args[0]},${args[1]}. Expected LD A,f or LD f,A`,
+                    );
                 }
             }
             throw new Error(`Invalid LD instruction: expected 2 arguments`);
@@ -341,10 +357,10 @@ class SC8P053Assembler {
         // RET i - Return with immediate value (8-bit immediate in bits 7-0)
         if (opcode === 'RET' && args.length === 1) {
             const imm = this.resolveImmediate(args[0]);
-            if (imm < 0 || imm > 0xFF) {
+            if (imm < 0 || imm > 0xff) {
                 throw new Error(`RET immediate value out of range (0-255): ${imm}`);
             }
-            return OPCODES['RET_I'] | (imm & 0xFF);
+            return OPCODES['RET_I'] | (imm & 0xff);
         }
 
         // One argument instructions
@@ -353,28 +369,35 @@ class SC8P053Assembler {
 
             // Branch instructions: JP/CALL use 10-bit address (bits 9-0)
             if (opcode === 'JP' || opcode === 'CALL') {
-                if (operand < 0 || operand > 0x03FF) {
+                if (operand < 0 || operand > 0x03ff) {
                     throw new Error(`${opcode} address out of range (0-1023): ${operand}`);
                 }
-                return baseOpcode | (operand & 0x03FF);
+                return baseOpcode | (operand & 0x03ff);
             }
 
             // Immediate instructions: all use 8-bit immediate (bits 7-0)
-            if (opcode === 'LDIA' || opcode === 'ANDIA' || opcode === 'ORIA' || opcode === 'XORIA' ||
-                opcode === 'ADDIA' || opcode === 'SUBIA' || opcode === 'HSUBIA') {
-                if (operand < 0 || operand > 0xFF) {
+            if (
+                opcode === 'LDIA' ||
+                opcode === 'ANDIA' ||
+                opcode === 'ORIA' ||
+                opcode === 'XORIA' ||
+                opcode === 'ADDIA' ||
+                opcode === 'SUBIA' ||
+                opcode === 'HSUBIA'
+            ) {
+                if (operand < 0 || operand > 0xff) {
                     throw new Error(`${opcode} immediate value out of range (0-255): ${operand}`);
                 }
-                return baseOpcode | (operand & 0xFF);
+                return baseOpcode | (operand & 0xff);
             }
 
             // Data transfer and logic/arithmetic/shift/skip: 7-bit address (bits 6-0)
             // LD_A_F, LD_F_A, TESTZ, CLR_F, SET_F, ANDA_F, etc.
             // Bank1 addresses (0x80-0xFF) are masked to 7-bit (low 7 bits)
-            if (operand < 0 || operand > 0xFF) {
+            if (operand < 0 || operand > 0xff) {
                 throw new Error(`Address out of range (0-255) for ${opcode}: ${operand}`);
             }
-            return baseOpcode | (operand & 0x7F);
+            return baseOpcode | (operand & 0x7f);
         }
 
         // Two arguments: bit manipulation instructions (CLRB, SETB, SZB, SNZB)
@@ -384,14 +407,14 @@ class SC8P053Assembler {
             const addr = this.resolveOperand(args[0]);
             const bit = this.resolveImmediate(args[1]);
 
-            if (addr < 0 || addr > 0xFF) {
+            if (addr < 0 || addr > 0xff) {
                 throw new Error(`Address out of range (0-255) for ${opcode}: ${addr}`);
             }
             if (bit < 0 || bit > 7) {
                 throw new Error(`Bit position out of range (0-7) for ${opcode}: ${bit}`);
             }
 
-            return baseOpcode | (addr & 0x7F) | ((bit & 0x07) << 7);
+            return baseOpcode | (addr & 0x7f) | ((bit & 0x07) << 7);
         }
 
         throw new Error(`Invalid number of arguments for ${opcode}: ${args.length}`);
@@ -402,7 +425,7 @@ class SC8P053Assembler {
      */
     private resolveOperand(operand: string): number {
         // Remove brackets if present (e.g., [f] -> f)
-        let cleanOperand = operand.replace(/[\[\]]/g, '').trim();
+        const cleanOperand = operand.replace(/[\[\]]/g, '').trim();
 
         // Handle expressions in parentheses like (CLKDIV_16 | PWM0EN)
         if (cleanOperand.startsWith('(') && cleanOperand.endsWith(')')) {
@@ -454,7 +477,7 @@ class SC8P053Assembler {
         expr = expr.replace(/\s+/g, '');
 
         // Split by operators while keeping them
-        const tokens = expr.split(/([+\-|&^*/])/).filter(t => t.length > 0);
+        const tokens = expr.split(/([+\-|&^*/])/).filter((t) => t.length > 0);
 
         if (tokens.length === 1) {
             // Single value
@@ -469,21 +492,34 @@ class SC8P053Assembler {
             const operand = this.resolveOperand(tokens[i + 1]);
 
             switch (operator) {
-                case '+': result = (result + operand) & 0xFF; break;
-                case '-': result = (result - operand) & 0xFF; break;
-                case '|': result = result | operand; break;
-                case '&': result = result & operand; break;
-                case '^': result = result ^ operand; break;
-                case '*': result = (result * operand) & 0xFF; break;
-                case '/': result = Math.floor(result / operand); break;
+                case '+':
+                    result = (result + operand) & 0xff;
+                    break;
+                case '-':
+                    result = (result - operand) & 0xff;
+                    break;
+                case '|':
+                    result = result | operand;
+                    break;
+                case '&':
+                    result = result & operand;
+                    break;
+                case '^':
+                    result = result ^ operand;
+                    break;
+                case '*':
+                    result = (result * operand) & 0xff;
+                    break;
+                case '/':
+                    result = Math.floor(result / operand);
+                    break;
                 default:
                     throw new Error(`Unsupported operator: ${operator}`);
             }
         }
 
-        return result & 0xFFFF; // Ensure 16-bit result
+        return result & 0xffff; // Ensure 16-bit result
     }
-
 }
 
 /**
@@ -492,7 +528,7 @@ class SC8P053Assembler {
  * @returns ROM as Uint16Array
  */
 export function parseIntelHex(hexContent: string): Uint16Array {
-    const lines = hexContent.split('\n').filter(line => line.trim().length > 0);
+    const lines = hexContent.split('\n').filter((line) => line.trim().length > 0);
     const dataBytes: number[] = [];
 
     for (const line of lines) {
@@ -537,7 +573,7 @@ export function parseIntelHex(hexContent: string): Uint16Array {
  * @param startAddress Starting address (default 0)
  * @returns Intel HEX formatted string
  */
-export function toIntelHex(rom: Uint16Array, startAddress: number = 0): string {
+export function toIntelHex(rom: Uint16Array, startAddress = 0): string {
     const lines: string[] = [];
     const bytesPerLine = 16; // 16 bytes per line (8 words)
 
@@ -545,8 +581,8 @@ export function toIntelHex(rom: Uint16Array, startAddress: number = 0): string {
     const byteArray: number[] = [];
     for (let i = 0; i < rom.length; i++) {
         const word = rom[i];
-        byteArray.push(word & 0xFF);        // Low byte
-        byteArray.push((word >> 8) & 0xFF); // High byte
+        byteArray.push(word & 0xff); // Low byte
+        byteArray.push((word >> 8) & 0xff); // High byte
     }
 
     let address = startAddress;
@@ -569,8 +605,8 @@ export function toIntelHex(rom: Uint16Array, startAddress: number = 0): string {
         line += count.toString(16).padStart(2, '0').toUpperCase();
 
         // Address (16-bit)
-        const addrLow = address & 0xFF;
-        const addrHigh = (address >> 8) & 0xFF;
+        const addrLow = address & 0xff;
+        const addrHigh = (address >> 8) & 0xff;
         checksum += addrLow + addrHigh;
         line += addrHigh.toString(16).padStart(2, '0').toUpperCase();
         line += addrLow.toString(16).padStart(2, '0').toUpperCase();
@@ -587,7 +623,7 @@ export function toIntelHex(rom: Uint16Array, startAddress: number = 0): string {
         }
 
         // Checksum (two's complement of sum)
-        checksum = (~checksum + 1) & 0xFF;
+        checksum = (~checksum + 1) & 0xff;
         line += checksum.toString(16).padStart(2, '0').toUpperCase();
 
         lines.push(line);
@@ -613,4 +649,3 @@ export function assemble(source: string): {
 } {
     return new SC8P053Assembler().assemble(source);
 }
-

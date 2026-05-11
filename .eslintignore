@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+example/dist/
+
+# Generated files
+*.d.ts
+*.js
+*.map
+
+# Configuration files
+package.json
+package-lock.json
+
+# Documentation
+docs/
+
+# Test files
+src/cc-test.js
+
+# Styles
+*.css

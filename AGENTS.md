@@ -32,6 +32,13 @@ npm run dev
 
 # Install dependencies
 npm install
+
+# Lint code quality and style
+npm run lint          # Check all TypeScript files
+npm run lint:src      # Check src/ directory only
+npm run lint:example  # Check example/ directory only
+npm run lint:fix      # Auto-fix fixable issues
+npm run format        # Format all supported files
 ```
 
 ## Development Principles
@@ -69,6 +76,88 @@ This project uses AI agent skills to enforce workflows and best practices.
 **CRITICAL**: Invoke appropriate skills based on task type. Don't skip skill usage.
 
 Skills are installed in your agent's skill directory and will be available automatically.
+
+## Documentation Requirements by Task Type
+
+Not all tasks require the same level of documentation. Use this guide to determine what documents to create:
+
+### Level 1: Major Architecture Changes
+**Examples**: New subsystem, major refactoring, technology migration, project-wide decisions
+
+**Required Documents**:
+- ✅ **ADR** (`docs/decisions/`) - Document the architectural decision
+- ✅ **Design Spec** (`docs/superpowers/specs/`) - Detailed design document
+- ✅ **Implementation Plan** (`docs/superpowers/plans/`) - Step-by-step implementation plan
+
+**When to use**: Changes that affect multiple modules, introduce new paradigms, or have long-term impact on the project.
+
+**Example**: Adding document-driven development infrastructure (ADR 001)
+
+---
+
+### Level 2: Feature Development
+**Examples**: New VM instruction, compiler feature, UI component, significant functionality
+
+**Required Documents**:
+- ✅ **Design Spec** (`docs/superpowers/specs/`) - Design document
+- ✅ **Implementation Plan** (`docs/superpowers/plans/`) - Implementation plan
+
+**Optional**:
+- ⚠️ ADR (only if it involves a significant design decision)
+
+**When to use**: Adding substantial new features that require design思考 and planning.
+
+**Example**: Adding comprehensive error detection with AST analysis
+
+---
+
+### Level 3: Tool Configuration / Infrastructure Improvements
+**Examples**: Add linting, update dependencies, configure CI/CD, add build tools
+
+**Required Documents**:
+- ✅ **Update existing docs** - Update relevant documentation (e.g., AGENTS.md, LINT_GUIDE.md)
+- ⚠️ **ADR (optional)** - Only if it's a significant decision worth recording
+
+**NOT Required**:
+- ❌ No spec needed
+- ❌ No plan needed
+
+**When to use**: Tool chain improvements, configuration changes, or infrastructure updates that are relatively straightforward.
+
+**Example**: Adding ESLint + Prettier for code quality (created ADR 002, but NO spec/plan needed)
+
+**Note**: If you already created spec/plan for this type of work, that's acceptable but not required for future similar tasks.
+
+---
+
+### Level 4: Simple Bug Fixes / Small Changes
+**Examples**: Fix typo, adjust styling, minor logic fix, small refactoring
+
+**Required Documents**:
+- ✅ **No new documentation needed**
+- Just ensure code is clear, tested, and commit message is descriptive
+
+**When to use**: Minor fixes, small improvements, or changes that don't affect architecture or add significant features.
+
+**Example**: Fixing a bug in register display, adjusting CSS spacing
+
+---
+
+### Decision Flowchart
+
+```
+Is this a major architecture change?
+├─ YES → Level 1 (ADR + Spec + Plan)
+└─ NO
+   ├─ Is this a new feature or significant functionality?
+   │  ├─ YES → Level 2 (Spec + Plan)
+   │  └─ NO
+   │     ├─ Is this tool configuration or infrastructure?
+   │     │  ├─ YES → Level 3 (Update docs, ADR optional)
+   │     │  └─ NO → Level 4 (No new docs needed)
+```
+
+**Key Principle**: Documentation should add value, not create bureaucracy. When in doubt, err on the side of more documentation for complex changes, less for simple ones.
 
 ## Code Structure Overview
 
@@ -120,6 +209,30 @@ example/
 ✅ **Do update docs** - Keep documentation synchronized with code changes
 
 ## Development Tools & Verification
+
+### Code Quality: ESLint + Prettier
+
+This project uses **ESLint** and **Prettier** to enforce code quality and style consistency.
+
+**Configuration files:**
+- `.eslintrc.js` - Root ESLint config (general rules)
+- `.prettierrc.js` - Prettier formatting config
+- `src/.eslintrc.js` - src/ specific rules (Node.js/library code)
+- `example/.eslintrc.js` - example/ specific rules (React/Web code)
+- `.eslintignore` - Files to exclude from linting
+
+**Code style standards:**
+- 4-space indentation
+- Single quotes
+- Semicolons required
+- Max line length: 100 characters
+- Trailing commas
+
+**For new agents:**
+- Run `npm run lint` before committing to ensure code quality
+- Use `npm run lint:fix` to auto-fix formatting issues
+- Check `docs/LINT_GUIDE.md` for detailed usage instructions
+- IDE integration recommended (install ESLint and Prettier plugins)
 
 ### Using LSP (Language Server Protocol)
 
@@ -311,13 +424,75 @@ Refs: #45
 
 ### Before Committing Checklist
 
-- [ ] Code follows style guidelines
+- [ ] Code follows style guidelines (run `npm run lint`)
 - [ ] Tests added/updated and passing
 - [ ] Documentation updated
 - [ ] Commit message follows conventional format
 - [ ] No debug code left in (console.log, etc.)
 - [ ] Branch is up to date with main
 - [ ] **Version bump ONLY if releasing new version** (check package.json)
+
+## Completing a Task
+
+After implementing and testing your changes, you MUST complete these steps:
+
+### 1. Update Documentation
+
+If your changes affect:
+- **Public APIs** → Update `docs/COMPONENTS.md`
+- **Architecture** → Update `docs/CODE_STRUCTURE.md`
+- **Setup process** → Update `docs/ONBOARDING.md`
+- **Workflows** → Update `docs/WORKFLOW.md`
+- **Design decisions** → Add ADR in `docs/decisions/`
+
+### 2. Run Code Quality Checks
+
+```bash
+npm run lint          # Check code quality
+npm run lint:fix      # Auto-fix issues if any
+```
+
+Fix any linting errors before proceeding.
+
+### 3. Verify Build
+
+**For src/ changes:**
+```bash
+npm run build
+```
+
+**For example/ changes:**
+```bash
+npm run dev           # Check for webpack errors
+```
+
+### 4. Commit Changes
+
+Follow the commit message format from the "Git Commit Standards" section below.
+
+**Example:**
+```bash
+git add .
+git commit -m "feat(example): add compiler error display
+
+- Implement error state management in App component
+- Add error message display in bottom status bar
+- Clear errors on successful compilation
+- Style error messages to match existing UI
+"
+git push
+```
+
+### 5. Final Verification
+
+Use the `verification-before-completion` skill to ensure:
+- All tests pass
+- Code follows style guidelines
+- Documentation is updated
+- Commit message is correct
+- No debug code left in
+
+---
 
 ## Project Status
 

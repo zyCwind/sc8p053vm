@@ -8,19 +8,25 @@ import Parser from 'web-tree-sitter';
 import { assemble } from './asmc';
 
 const language = Parser.init().then(() => {
-    if (typeof process == "object" && typeof process.versions == "object" && typeof process.versions.node == "string") {
-        return Parser.Language.load(__dirname + '/../node_modules/tree-sitter-c/tree-sitter-c.wasm');
+    if (
+        typeof process == 'object' &&
+        typeof process.versions == 'object' &&
+        typeof process.versions.node == 'string'
+    ) {
+        return Parser.Language.load(
+            __dirname + '/../node_modules/tree-sitter-c/tree-sitter-c.wasm',
+        );
     } else {
         return Parser.Language.load('tree-sitter-c.wasm');
     }
 });
 
 const RAM_GP_START = 0x20;
-const RAM_GP_END = 0x6F;
+const RAM_GP_END = 0x6f;
 const RAM_SHARED_START = 0x70;
-const RAM_SHARED_END = 0x7F;
-const RAM_BANK1_START = 0xA0;
-const RAM_BANK1_END = 0xEF;
+const RAM_SHARED_END = 0x7f;
+const RAM_BANK1_START = 0xa0;
+const RAM_BANK1_END = 0xef;
 const ISR_SAVE_SIZE = 4;
 
 type Type = 'void' | 'u8' | 'i8' | 'bool';
@@ -167,7 +173,11 @@ class Preprocessor {
         return outputLines.join('\n');
     }
 
-    private joinContinuationLines(source: string): { text: string; lineMap: number[]; rawLineCount: number } {
+    private joinContinuationLines(source: string): {
+        text: string;
+        lineMap: number[];
+        rawLineCount: number;
+    } {
         const rawLines = source.split('\n');
         const result: string[] = [];
         const lineMap: number[] = [];
@@ -280,7 +290,7 @@ class Preprocessor {
         }
 
         const rest = tokens.slice(1);
-        const leadingWs = rest.findIndex(t => t.type !== 'whitespace');
+        const leadingWs = rest.findIndex((t) => t.type !== 'whitespace');
 
         if (leadingWs === -1) {
             this.macros.set(name, { kind: 'object', name, body: [] });
@@ -308,7 +318,11 @@ class Preprocessor {
             if (tokens[i].type === 'punctuation' && tokens[i].value === '...') {
                 isVariadic = true;
                 i++;
-                if (i < tokens.length && tokens[i].type === 'punctuation' && tokens[i].value === ')') {
+                if (
+                    i < tokens.length &&
+                    tokens[i].type === 'punctuation' &&
+                    tokens[i].value === ')'
+                ) {
                     i++;
                     break;
                 }
@@ -317,12 +331,19 @@ class Preprocessor {
             if (tokens[i].type === 'identifier') {
                 params.push(tokens[i].value);
                 i++;
-                if (i < tokens.length && tokens[i].type === 'punctuation' && tokens[i].value === ',') {
+                if (
+                    i < tokens.length &&
+                    tokens[i].type === 'punctuation' &&
+                    tokens[i].value === ','
+                ) {
                     i++;
                 }
                 continue;
             }
-            if (tokens[i].type === 'whitespace' || tokens[i].type === 'punctuation' && tokens[i].value === ',') {
+            if (
+                tokens[i].type === 'whitespace' ||
+                (tokens[i].type === 'punctuation' && tokens[i].value === ',')
+            ) {
                 i++;
                 continue;
             }
@@ -347,7 +368,7 @@ class Preprocessor {
             active: condition,
             elseSeen: false,
             parentActive: this.isActive(),
-            branchTaken: condition
+            branchTaken: condition,
         });
     }
 
@@ -356,8 +377,11 @@ class Preprocessor {
         this.condStack.push({
             active: result,
             elseSeen: false,
-            parentActive: this.condStack.length === 0 ? true : this.condStack[this.condStack.length - 1].active,
-            branchTaken: result
+            parentActive:
+                this.condStack.length === 0
+                    ? true
+                    : this.condStack[this.condStack.length - 1].active,
+            branchTaken: result,
         });
     }
 
@@ -406,11 +430,13 @@ class Preprocessor {
     }
 
     private resolveDefined(text: string): string {
-        return text.replace(/\bdefined\s*\(\s*(\w+)\s*\)/g, (_, name) => {
-            return this.macros.has(name) ? '1' : '0';
-        }).replace(/\bdefined\s+(\w+)/g, (_, name) => {
-            return this.macros.has(name) ? '1' : '0';
-        });
+        return text
+            .replace(/\bdefined\s*\(\s*(\w+)\s*\)/g, (_, name) => {
+                return this.macros.has(name) ? '1' : '0';
+            })
+            .replace(/\bdefined\s+(\w+)/g, (_, name) => {
+                return this.macros.has(name) ? '1' : '0';
+            });
     }
 
     private evalConstExpr(text: string): boolean {
@@ -433,7 +459,7 @@ class Preprocessor {
     private expandLine(line: string, lineNo: number): string {
         const tokens = this.tokenize(line, lineNo);
         const expanded = this.expandTokens(tokens, new Set());
-        return expanded.map(t => t.value).join('');
+        return expanded.map((t) => t.value).join('');
     }
 
     private expandTokens(tokens: Token[], expanding: Set<string>): Token[] {
@@ -442,14 +468,18 @@ class Preprocessor {
         while (i < tokens.length) {
             const token = tokens[i];
             const noExpand = token.noExpand || new Set<string>();
-            if (token.type === 'identifier' && !noExpand.has(token.value) && !expanding.has(token.value)) {
+            if (
+                token.type === 'identifier' &&
+                !noExpand.has(token.value) &&
+                !expanding.has(token.value)
+            ) {
                 const macro = this.macros.get(token.value);
                 if (macro) {
                     const newExpanding = new Set(expanding);
                     newExpanding.add(token.value);
                     if (macro.kind === 'object') {
                         const expanded = this.expandTokens(macro.body, newExpanding);
-                        const painted = expanded.map(t => {
+                        const painted = expanded.map((t) => {
                             if (t.type === 'identifier' && t.value === token.value) {
                                 const t2 = { ...t };
                                 t2.noExpand = new Set(t.noExpand || []);
@@ -468,7 +498,7 @@ class Preprocessor {
                         if (args !== null) {
                             const substituted = this.substituteFnMacro(macro, args);
                             const reExpanded = this.expandTokens(substituted, newExpanding);
-                            const painted = reExpanded.map(t => {
+                            const painted = reExpanded.map((t) => {
                                 if (t.type === 'identifier' && t.value === token.value) {
                                     const t2 = { ...t };
                                     t2.noExpand = new Set(t.noExpand || []);
@@ -478,7 +508,10 @@ class Preprocessor {
                                 return t;
                             });
                             const remaining = tokens.slice(nextIdx);
-                            const rescanned = this.expandTokens([...painted, ...remaining], expanding);
+                            const rescanned = this.expandTokens(
+                                [...painted, ...remaining],
+                                expanding,
+                            );
                             result.push(...rescanned);
                             return result;
                         }
@@ -491,7 +524,11 @@ class Preprocessor {
         return result;
     }
 
-    private collectArgs(tokens: Token[], startIdx: number, macro: FnMacro): { args: Token[][] | null; nextIdx: number } {
+    private collectArgs(
+        tokens: Token[],
+        startIdx: number,
+        macro: FnMacro,
+    ): { args: Token[][] | null; nextIdx: number } {
         let i = startIdx;
         while (i < tokens.length && tokens[i].type === 'whitespace') i++;
         if (i >= tokens.length || tokens[i].value !== '(') {
@@ -530,15 +567,24 @@ class Preprocessor {
     }
 
     private substituteFnMacro(macro: FnMacro, args: Token[][]): Token[] {
-        const expandedArgs = args.map(arg => this.expandTokens(arg, new Set()));
+        const expandedArgs = args.map((arg) => this.expandTokens(arg, new Set()));
         const result: Token[] = [];
         const body = this.trimPasteWhitespace(macro.body);
         for (let i = 0; i < body.length; i++) {
             const token = body[i];
 
-            const isNextPaste = (i + 1 < body.length && body[i + 1].type === 'punctuation' && body[i + 1].value === '##')
-                || (i + 2 < body.length && body[i + 1].type === 'whitespace' && body[i + 2].type === 'punctuation' && body[i + 2].value === '##');
-            const isPrevPaste = result.length > 0 && result[result.length - 1].type === 'punctuation' && result[result.length - 1].value === '##';
+            const isNextPaste =
+                (i + 1 < body.length &&
+                    body[i + 1].type === 'punctuation' &&
+                    body[i + 1].value === '##') ||
+                (i + 2 < body.length &&
+                    body[i + 1].type === 'whitespace' &&
+                    body[i + 2].type === 'punctuation' &&
+                    body[i + 2].value === '##');
+            const isPrevPaste =
+                result.length > 0 &&
+                result[result.length - 1].type === 'punctuation' &&
+                result[result.length - 1].value === '##';
 
             if (token.type === 'punctuation' && token.value === '##') {
                 let j = i + 1;
@@ -546,21 +592,35 @@ class Preprocessor {
                 if (j < body.length && body[j].type === 'identifier') {
                     const paramIdx = macro.params.indexOf(body[j].value);
                     if (paramIdx >= 0 && paramIdx < args.length) {
-                        const left = result.length > 0 ? result.pop()! : { type: 'other' as TokenType, value: '', lineNo: 0 };
+                        const left =
+                            result.length > 0
+                                ? result.pop()!
+                                : { type: 'other' as TokenType, value: '', lineNo: 0 };
                         const rightTokens = args[paramIdx];
-                        const rightValue = rightTokens.map(t => t.value).join('');
+                        const rightValue = rightTokens.map((t) => t.value).join('');
                         const pasted = left.value + rightValue;
-                        result.push({ type: this.classifyPasted(pasted), value: pasted, lineNo: left.lineNo });
+                        result.push({
+                            type: this.classifyPasted(pasted),
+                            value: pasted,
+                            lineNo: left.lineNo,
+                        });
                         i = j;
                         continue;
                     }
                 }
-                const left = result.length > 0 ? result.pop()! : { type: 'other' as TokenType, value: '', lineNo: 0 };
+                const left =
+                    result.length > 0
+                        ? result.pop()!
+                        : { type: 'other' as TokenType, value: '', lineNo: 0 };
                 let j2 = i + 1;
                 while (j2 < body.length && body[j2].type === 'whitespace') j2++;
                 if (j2 < body.length) {
                     const pasted = left.value + body[j2].value;
-                    result.push({ type: this.classifyPasted(pasted), value: pasted, lineNo: left.lineNo });
+                    result.push({
+                        type: this.classifyPasted(pasted),
+                        value: pasted,
+                        lineNo: left.lineNo,
+                    });
                     i = j2;
                     continue;
                 }
@@ -602,7 +662,10 @@ class Preprocessor {
     }
 
     private handleTokenPasting(body: Token[], startIdx: number, result: Token[]): number {
-        const left = result.length > 0 ? result.pop()! : { type: 'other' as TokenType, value: '', lineNo: 0 };
+        const left =
+            result.length > 0
+                ? result.pop()!
+                : { type: 'other' as TokenType, value: '', lineNo: 0 };
         let right: Token;
         let i = startIdx;
         while (i < body.length && body[i].type === 'whitespace') i++;
@@ -622,13 +685,20 @@ class Preprocessor {
         const result: Token[] = [];
         for (let i = 0; i < tokens.length; i++) {
             if (tokens[i].type === 'punctuation' && tokens[i].value === '##') {
-                const left = result.length > 0 ? result.pop()! : { type: 'other' as TokenType, value: '', lineNo: 0 };
+                const left =
+                    result.length > 0
+                        ? result.pop()!
+                        : { type: 'other' as TokenType, value: '', lineNo: 0 };
                 let j = i + 1;
                 while (j < tokens.length && tokens[j].type === 'whitespace') j++;
                 if (j < tokens.length) {
                     const right = tokens[j];
                     const pasted = left.value + right.value;
-                    result.push({ type: this.classifyPasted(pasted), value: pasted, lineNo: left.lineNo });
+                    result.push({
+                        type: this.classifyPasted(pasted),
+                        value: pasted,
+                        lineNo: left.lineNo,
+                    });
                     i = j;
                 } else {
                     result.push(left);
@@ -641,9 +711,16 @@ class Preprocessor {
     }
 
     private stringify(tokens: Token[]): Token {
-        const s = tokens.map(t => t.value).join('').trim();
+        const s = tokens
+            .map((t) => t.value)
+            .join('')
+            .trim();
         const escaped = s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-        return { type: 'string', value: `"${escaped}"`, lineNo: tokens.length > 0 ? tokens[0].lineNo : 0 };
+        return {
+            type: 'string',
+            value: `"${escaped}"`,
+            lineNo: tokens.length > 0 ? tokens[0].lineNo : 0,
+        };
     }
 
     private trimPasteWhitespace(tokens: Token[]): Token[] {
@@ -746,10 +823,34 @@ class Preprocessor {
             }
 
             if ('+-*/%<>=!&|^~?:;,()[]{}.#'.includes(ch)) {
-                let j = i + 1;
+                const j = i + 1;
                 if (j < text.length) {
                     const two = text.slice(i, j + 1);
-                    if (['++', '--', '+=', '-=', '*=', '/=', '%=', '<<', '>>', '<=', '>=', '==', '!=', '&&', '||', '&=', '|=', '^=', '<<=', '>>=', '->'].includes(two)) {
+                    if (
+                        [
+                            '++',
+                            '--',
+                            '+=',
+                            '-=',
+                            '*=',
+                            '/=',
+                            '%=',
+                            '<<',
+                            '>>',
+                            '<=',
+                            '>=',
+                            '==',
+                            '!=',
+                            '&&',
+                            '||',
+                            '&=',
+                            '|=',
+                            '^=',
+                            '<<=',
+                            '>>=',
+                            '->',
+                        ].includes(two)
+                    ) {
                         tokens.push({ type: 'punctuation', value: two, lineNo });
                         i = j + 1;
                         continue;
@@ -769,8 +870,14 @@ class Preprocessor {
     private scanString(text: string, start: number): { value: string; endIdx: number } {
         let i = start + 1;
         while (i < text.length) {
-            if (text[i] === '\\') { i += 2; continue; }
-            if (text[i] === '"') { i++; break; }
+            if (text[i] === '\\') {
+                i += 2;
+                continue;
+            }
+            if (text[i] === '"') {
+                i++;
+                break;
+            }
             i++;
         }
         return { value: text.slice(start, i), endIdx: i };
@@ -779,8 +886,14 @@ class Preprocessor {
     private scanChar(text: string, start: number): { value: string; endIdx: number } {
         let i = start + 1;
         while (i < text.length) {
-            if (text[i] === '\\') { i += 2; continue; }
-            if (text[i] === "'") { i++; break; }
+            if (text[i] === '\\') {
+                i += 2;
+                continue;
+            }
+            if (text[i] === "'") {
+                i++;
+                break;
+            }
             i++;
         }
         return { value: text.slice(start, i), endIdx: i };
@@ -789,16 +902,22 @@ class Preprocessor {
 
 class SC8P053Compiler {
     private globalSymbols: Map<string, Sym> = new Map();
-    private globalInits: { asmName: string; value: number; isArray: boolean; ramAddr: number; arrayValues?: number[] }[] = [];
+    private globalInits: {
+        asmName: string;
+        value: number;
+        isArray: boolean;
+        ramAddr: number;
+        arrayValues?: number[];
+    }[] = [];
     private fns: Map<string, Fn> = new Map();
     private nextRamAddr: number = RAM_GP_START;
-    private currentBank: number = 0;
-    private currentAsmBank: number = 0;
+    private currentBank = 0;
+    private currentAsmBank = 0;
     private asmLines: string[] = [];
     private currentFn: Fn | null = null;
-    private tempCounter: number = 0;
-    private dryRun: boolean = false;
-    private currentSourceLine: number = 0;
+    private tempCounter = 0;
+    private dryRun = false;
+    private currentSourceLine = 0;
 
     private tempName(idx: number): string {
         if (!this.currentFn) return `_T${idx}`;
@@ -812,7 +931,9 @@ class SC8P053Compiler {
         return idx;
     }
 
-    async compile(source: string): Promise<{ rom: Uint16Array; asm: string; debugInfo: DebugInfo }> {
+    async compile(
+        source: string,
+    ): Promise<{ rom: Uint16Array; asm: string; debugInfo: DebugInfo }> {
         const preprocessor = new Preprocessor();
         const preprocessed = preprocessor.preprocess(source);
         const c = await language;
@@ -926,13 +1047,19 @@ class SC8P053Compiler {
         const debugInfo: DebugInfo = {
             lineNoMap,
             fnRanges,
-            varMap
+            varMap,
         };
 
         return { rom, asm: asmSource, debugInfo };
     }
 
-    private analyzeFnBody(funcName: string, node: Parser.SyntaxNode, fn: Fn, loopDepth: number, switchDepth: number) {
+    private analyzeFnBody(
+        funcName: string,
+        node: Parser.SyntaxNode,
+        fn: Fn,
+        loopDepth: number,
+        switchDepth: number,
+    ) {
         if (node.type === 'ERROR') {
             const line = node.startPosition.row + 1;
             const col = node.startPosition.column + 1;
@@ -941,7 +1068,11 @@ class SC8P053Compiler {
         if (node.isMissing) {
             throw new Error(`Syntax error: unexpected end of input`);
         }
-        if (node.type === 'while_statement' || node.type === 'do_statement' || node.type === 'for_statement') {
+        if (
+            node.type === 'while_statement' ||
+            node.type === 'do_statement' ||
+            node.type === 'for_statement'
+        ) {
             loopDepth++;
         }
         if (node.type === 'switch_statement') {
@@ -949,7 +1080,9 @@ class SC8P053Compiler {
         }
         if (node.type === 'break_statement') {
             if (loopDepth === 0 && switchDepth === 0) {
-                throw new Error(`'break' statement not within loop or switch in function '${funcName}'`);
+                throw new Error(
+                    `'break' statement not within loop or switch in function '${funcName}'`,
+                );
             }
         }
         if (node.type === 'continue_statement') {
@@ -993,7 +1126,9 @@ class SC8P053Compiler {
             if (cycle) {
                 const cycleStart = cycle.indexOf(cycle[cycle.length - 1]);
                 const path = cycle.slice(cycleStart).join(' -> ');
-                throw new Error(`Recursive function call detected: ${path}. Recursion is not supported on this target (static RAM allocation).`);
+                throw new Error(
+                    `Recursive function call detected: ${path}. Recursion is not supported on this target (static RAM allocation).`,
+                );
             }
         }
     }
@@ -1036,7 +1171,7 @@ class SC8P053Compiler {
                 const col = child.startPosition.column + 1;
                 throw new Error(
                     `Unexpected top-level construct '${child.type}' at line ${line}, column ${col}. ` +
-                    `A translation unit can only contain function definitions, declarations, and preprocessor directives.`
+                        `A translation unit can only contain function definitions, declarations, and preprocessor directives.`,
                 );
             }
         }
@@ -1056,8 +1191,15 @@ class SC8P053Compiler {
             this.analyzeFnBody(funcName, bodyNode, fn, 0, 0);
             const cfg = this.buildCFG(bodyNode);
             fn.allPathsReturn = this.cfgAllPathsReturn(cfg);
-            if (!fn.allPathsReturn && fn.returnType !== 'void' && funcName !== 'main' && !fn.isISR) {
-                throw new Error(`Non-void function '${funcName}' must return a value on all code paths`);
+            if (
+                !fn.allPathsReturn &&
+                fn.returnType !== 'void' &&
+                funcName !== 'main' &&
+                !fn.isISR
+            ) {
+                throw new Error(
+                    `Non-void function '${funcName}' must return a value on all code paths`,
+                );
             }
         }
     }
@@ -1079,7 +1221,13 @@ class SC8P053Compiler {
         return { entry, exit, blocks };
     }
 
-    private buildCFGCompound(node: Parser.SyntaxNode, entry: BasicBlock, exit: BasicBlock, blocks: BasicBlock[], loopHeader?: BasicBlock): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+    private buildCFGCompound(
+        node: Parser.SyntaxNode,
+        entry: BasicBlock,
+        exit: BasicBlock,
+        blocks: BasicBlock[],
+        loopHeader?: BasicBlock,
+    ): { currentBlock: BasicBlock | null; fallThrough: boolean } {
         const stmts: Parser.SyntaxNode[] = [];
         for (let i = 0; i < node.childCount; i++) {
             const child = node.child(i);
@@ -1097,7 +1245,13 @@ class SC8P053Compiler {
         return { currentBlock, fallThrough };
     }
 
-    private buildCFGStmt(stmt: Parser.SyntaxNode, currentBlock: BasicBlock, exit: BasicBlock, blocks: BasicBlock[], loopHeader?: BasicBlock): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+    private buildCFGStmt(
+        stmt: Parser.SyntaxNode,
+        currentBlock: BasicBlock,
+        exit: BasicBlock,
+        blocks: BasicBlock[],
+        loopHeader?: BasicBlock,
+    ): { currentBlock: BasicBlock | null; fallThrough: boolean } {
         if (stmt.type === 'return_statement') {
             currentBlock.terminator = 'return';
             return { currentBlock, fallThrough: false };
@@ -1144,7 +1298,13 @@ class SC8P053Compiler {
         return { currentBlock, fallThrough: true };
     }
 
-    private buildCFGIf(stmt: Parser.SyntaxNode, currentBlock: BasicBlock, exit: BasicBlock, blocks: BasicBlock[], loopHeader?: BasicBlock): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+    private buildCFGIf(
+        stmt: Parser.SyntaxNode,
+        currentBlock: BasicBlock,
+        exit: BasicBlock,
+        blocks: BasicBlock[],
+        loopHeader?: BasicBlock,
+    ): { currentBlock: BasicBlock | null; fallThrough: boolean } {
         const consequence = stmt.childForFieldName('consequence');
         const alternative = stmt.childForFieldName('alternative');
 
@@ -1160,7 +1320,13 @@ class SC8P053Compiler {
             const elseBlock = this.newBlock(blocks);
             currentBlock.successors.push(elseBlock);
             if (consequence) {
-                const thenResult = this.buildCFGStmt(consequence, thenBlock, exit, blocks, loopHeader);
+                const thenResult = this.buildCFGStmt(
+                    consequence,
+                    thenBlock,
+                    exit,
+                    blocks,
+                    loopHeader,
+                );
                 thenFallsThrough = thenResult.fallThrough;
                 if (thenResult.fallThrough && thenResult.currentBlock) {
                     thenResult.currentBlock.successors.push(mergeBlock);
@@ -1169,7 +1335,10 @@ class SC8P053Compiler {
                 thenBlock.successors.push(mergeBlock);
                 thenFallsThrough = true;
             }
-            const elseBody = alternative.type === 'else_clause' ? this.extractElseBody(alternative) : alternative;
+            const elseBody =
+                alternative.type === 'else_clause'
+                    ? this.extractElseBody(alternative)
+                    : alternative;
             if (elseBody) {
                 const elseResult = this.buildCFGStmt(elseBody, elseBlock, exit, blocks, loopHeader);
                 elseFallsThrough = elseResult.fallThrough;
@@ -1184,7 +1353,13 @@ class SC8P053Compiler {
             currentBlock.successors.push(mergeBlock);
             elseFallsThrough = true;
             if (consequence) {
-                const thenResult = this.buildCFGStmt(consequence, thenBlock, exit, blocks, loopHeader);
+                const thenResult = this.buildCFGStmt(
+                    consequence,
+                    thenBlock,
+                    exit,
+                    blocks,
+                    loopHeader,
+                );
                 thenFallsThrough = thenResult.fallThrough;
                 if (thenResult.fallThrough && thenResult.currentBlock) {
                     thenResult.currentBlock.successors.push(mergeBlock);
@@ -1201,7 +1376,11 @@ class SC8P053Compiler {
         return { currentBlock: mergeBlock, fallThrough: true };
     }
 
-    private buildCFGWhile(stmt: Parser.SyntaxNode, currentBlock: BasicBlock, blocks: BasicBlock[]): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+    private buildCFGWhile(
+        stmt: Parser.SyntaxNode,
+        currentBlock: BasicBlock,
+        blocks: BasicBlock[],
+    ): { currentBlock: BasicBlock | null; fallThrough: boolean } {
         const body = stmt.childForFieldName('body');
         const condition = stmt.childForFieldName('condition');
 
@@ -1238,7 +1417,11 @@ class SC8P053Compiler {
         return { currentBlock: loopExit, fallThrough: true };
     }
 
-    private buildCFGFor(stmt: Parser.SyntaxNode, currentBlock: BasicBlock, blocks: BasicBlock[]): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+    private buildCFGFor(
+        stmt: Parser.SyntaxNode,
+        currentBlock: BasicBlock,
+        blocks: BasicBlock[],
+    ): { currentBlock: BasicBlock | null; fallThrough: boolean } {
         const body = stmt.childForFieldName('body');
         const condition = stmt.childForFieldName('condition');
 
@@ -1275,7 +1458,11 @@ class SC8P053Compiler {
         return { currentBlock: loopExit, fallThrough: true };
     }
 
-    private buildCFGDoWhile(stmt: Parser.SyntaxNode, currentBlock: BasicBlock, blocks: BasicBlock[]): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+    private buildCFGDoWhile(
+        stmt: Parser.SyntaxNode,
+        currentBlock: BasicBlock,
+        blocks: BasicBlock[],
+    ): { currentBlock: BasicBlock | null; fallThrough: boolean } {
         const body = stmt.childForFieldName('body');
         const condition = stmt.childForFieldName('condition');
 
@@ -1310,7 +1497,12 @@ class SC8P053Compiler {
         return { currentBlock: loopExit, fallThrough: true };
     }
 
-    private buildCFGSwitch(stmt: Parser.SyntaxNode, currentBlock: BasicBlock, blocks: BasicBlock[], loopHeader?: BasicBlock): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+    private buildCFGSwitch(
+        stmt: Parser.SyntaxNode,
+        currentBlock: BasicBlock,
+        blocks: BasicBlock[],
+        loopHeader?: BasicBlock,
+    ): { currentBlock: BasicBlock | null; fallThrough: boolean } {
         const body = stmt.childForFieldName('body');
         if (!body) return { currentBlock, fallThrough: true };
 
@@ -1342,8 +1534,14 @@ class SC8P053Compiler {
             for (let j = 0; j < caseNode.childCount; j++) {
                 const child = caseNode.child(j);
                 if (!child) continue;
-                if (child.type === 'case' || child.type === 'default' || child.type === ':') continue;
-                if (child.type === 'integer_literal' || child.type === 'number_literal' || child.type === 'identifier') continue;
+                if (child.type === 'case' || child.type === 'default' || child.type === ':')
+                    continue;
+                if (
+                    child.type === 'integer_literal' ||
+                    child.type === 'number_literal' ||
+                    child.type === 'identifier'
+                )
+                    continue;
                 caseStmts.push(child);
             }
             if (caseStmts.length === 0) {
@@ -1408,14 +1606,18 @@ class SC8P053Compiler {
                     continue;
                 }
 
-                const allReturn = block.successors.every(s => blockStatus.get(s.id) === 'returns');
+                const allReturn = block.successors.every(
+                    (s) => blockStatus.get(s.id) === 'returns',
+                );
                 if (allReturn) {
                     blockStatus.set(block.id, 'returns');
                     changed = true;
                     continue;
                 }
 
-                const anyNotReturn = block.successors.some(s => blockStatus.get(s.id) === 'not_returns');
+                const anyNotReturn = block.successors.some(
+                    (s) => blockStatus.get(s.id) === 'not_returns',
+                );
                 if (anyNotReturn) {
                     blockStatus.set(block.id, 'not_returns');
                     changed = true;
@@ -1434,7 +1636,7 @@ class SC8P053Compiler {
         const loopExitsReturn = (blockId: number, visited: Set<number>): boolean => {
             if (visited.has(blockId)) return true;
             visited.add(blockId);
-            const block = cfg.blocks.find(b => b.id === blockId);
+            const block = cfg.blocks.find((b) => b.id === blockId);
             if (!block) return true;
             const st = blockStatus.get(blockId);
             if (st === 'returns') return true;
@@ -1447,12 +1649,12 @@ class SC8P053Compiler {
         };
 
         for (const blockId of loopBlocks) {
-            const block = cfg.blocks.find(b => b.id === blockId)!;
-            const hasNonLoopSucc = block.successors.some(s => !loopBlocks.has(s.id));
+            const block = cfg.blocks.find((b) => b.id === blockId)!;
+            const hasNonLoopSucc = block.successors.some((s) => !loopBlocks.has(s.id));
             if (hasNonLoopSucc) {
                 const allExitsReturn = block.successors
-                    .filter(s => !loopBlocks.has(s.id))
-                    .every(s => loopExitsReturn(s.id, new Set()));
+                    .filter((s) => !loopBlocks.has(s.id))
+                    .every((s) => loopExitsReturn(s.id, new Set()));
                 if (allExitsReturn) {
                     blockStatus.set(blockId, 'returns');
                 } else {
@@ -1462,7 +1664,7 @@ class SC8P053Compiler {
                 const canReachReturn = (bid: number, v: Set<number>): boolean => {
                     if (v.has(bid)) return false;
                     v.add(bid);
-                    const b = cfg.blocks.find(bb => bb.id === bid);
+                    const b = cfg.blocks.find((bb) => bb.id === bid);
                     if (!b) return false;
                     if (b.terminator === 'return') return true;
                     for (const s of b.successors) {
@@ -1485,14 +1687,18 @@ class SC8P053Compiler {
                 const status = blockStatus.get(block.id);
                 if (status !== 'unknown') continue;
 
-                const allReturn = block.successors.every(s => blockStatus.get(s.id) === 'returns');
+                const allReturn = block.successors.every(
+                    (s) => blockStatus.get(s.id) === 'returns',
+                );
                 if (allReturn) {
                     blockStatus.set(block.id, 'returns');
                     changed2 = true;
                     continue;
                 }
 
-                const anyNotReturn = block.successors.some(s => blockStatus.get(s.id) === 'not_returns');
+                const anyNotReturn = block.successors.some(
+                    (s) => blockStatus.get(s.id) === 'not_returns',
+                );
                 if (anyNotReturn) {
                     blockStatus.set(block.id, 'not_returns');
                     changed2 = true;
@@ -1540,7 +1746,9 @@ class SC8P053Compiler {
             finfo.frameBase = sharedOffset;
             sharedOffset += finfo.frameSize;
             if (sharedOffset > RAM_SHARED_END + 1) {
-                throw new Error(`ISR frame overflow in shared memory: ${finfo.name} needs ${finfo.frameSize} bytes`);
+                throw new Error(
+                    `ISR frame overflow in shared memory: ${finfo.name} needs ${finfo.frameSize} bytes`,
+                );
             }
         }
 
@@ -1605,9 +1813,12 @@ class SC8P053Compiler {
             for (let i = 0; i < finfo.tempCount; i++) {
                 const asmName = `${finfo.asmName}_T${i}`;
                 const addr = tempBase + i;
-                const lineIdx = this.asmLines.findIndex(l => l === `${asmName} EQU ADDR_${asmName}`);
+                const lineIdx = this.asmLines.findIndex(
+                    (l) => l === `${asmName} EQU ADDR_${asmName}`,
+                );
                 if (lineIdx >= 0) {
-                    this.asmLines[lineIdx] = `${asmName} EQU 0x${addr.toString(16).toUpperCase().padStart(2, '0')}`;
+                    this.asmLines[lineIdx] =
+                        `${asmName} EQU 0x${addr.toString(16).toUpperCase().padStart(2, '0')}`;
                 }
             }
         }
@@ -1636,8 +1847,13 @@ class SC8P053Compiler {
         const codeLines: string[] = [];
 
         for (const line of this.asmLines) {
-            if (line.startsWith('STATUS EQU') || line.startsWith('FSR EQU') || line.startsWith('INDF EQU') ||
-                line.startsWith('PCLATH EQU') || line.startsWith('ISR_')) {
+            if (
+                line.startsWith('STATUS EQU') ||
+                line.startsWith('FSR EQU') ||
+                line.startsWith('INDF EQU') ||
+                line.startsWith('PCLATH EQU') ||
+                line.startsWith('ISR_')
+            ) {
                 headerLines.push(line);
             } else if (line.includes(' EQU ')) {
                 equLines.push(line);
@@ -1672,19 +1888,27 @@ class SC8P053Compiler {
         for (const [, sym] of this.globalSymbols) {
             if (sym.typeInfo.isArray) {
                 for (let i = 0; i < sym.typeInfo.arraySize; i++) {
-                    this.asmLines.push(`${sym.asmName}_${i} EQU 0x${(sym.ramAddr + i).toString(16).toUpperCase().padStart(2, '0')}`);
+                    this.asmLines.push(
+                        `${sym.asmName}_${i} EQU 0x${(sym.ramAddr + i).toString(16).toUpperCase().padStart(2, '0')}`,
+                    );
                 }
             } else {
-                this.asmLines.push(`${sym.asmName} EQU 0x${sym.ramAddr.toString(16).toUpperCase().padStart(2, '0')}`);
+                this.asmLines.push(
+                    `${sym.asmName} EQU 0x${sym.ramAddr.toString(16).toUpperCase().padStart(2, '0')}`,
+                );
             }
         }
         for (const [, fn] of this.fns) {
             for (const [, sym] of fn.localSymbols) {
                 if (!sym.typeInfo.isArray) {
-                    this.asmLines.push(`${sym.asmName} EQU 0x${sym.ramAddr.toString(16).toUpperCase().padStart(2, '0')}`);
+                    this.asmLines.push(
+                        `${sym.asmName} EQU 0x${sym.ramAddr.toString(16).toUpperCase().padStart(2, '0')}`,
+                    );
                 } else {
                     for (let i = 0; i < sym.typeInfo.arraySize; i++) {
-                        this.asmLines.push(`${sym.asmName}_${i} EQU 0x${(sym.ramAddr + i).toString(16).toUpperCase().padStart(2, '0')}`);
+                        this.asmLines.push(
+                            `${sym.asmName}_${i} EQU 0x${(sym.ramAddr + i).toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
                     }
                 }
             }
@@ -1700,19 +1924,21 @@ class SC8P053Compiler {
         const addr = this.nextRamAddr;
         if (this.currentBank === 0 && addr + size - 1 > RAM_GP_END) {
             this.currentBank = 1;
-            this.nextRamAddr = 0xA0;
+            this.nextRamAddr = 0xa0;
             return this.allocRam(size);
         }
-        if (this.currentBank === 1 && addr + size - 1 > 0xEF) {
-            throw new Error(`Out of RAM: need ${size} bytes from 0x${addr.toString(16)}, no more banks available`);
+        if (this.currentBank === 1 && addr + size - 1 > 0xef) {
+            throw new Error(
+                `Out of RAM: need ${size} bytes from 0x${addr.toString(16)}, no more banks available`,
+            );
         }
         this.nextRamAddr += size;
         return addr;
     }
 
     private getBankForAddr(addr: number): number {
-        if (addr >= 0x80 && addr <= 0xEF) return 1;  // Bank1 SFR
-        if (addr >= 0x70 && addr <= 0xFF) return -1; // 0x70-0x7F通用RAM + 0xF0-0xFF快速存储区
+        if (addr >= 0x80 && addr <= 0xef) return 1; // Bank1 SFR
+        if (addr >= 0x70 && addr <= 0xff) return -1; // 0x70-0x7F通用RAM + 0xF0-0xFF快速存储区
         return 0;
     }
 
@@ -1766,7 +1992,9 @@ class SC8P053Compiler {
             } else {
                 const t = this.allocTemp();
                 this.emitLdAToTemp(t);
-                this.asmLines.push(`ADDIA 0x${(index & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                this.asmLines.push(
+                    `ADDIA 0x${(index & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                );
                 this.emitIndirectRead();
             }
             return;
@@ -1781,7 +2009,9 @@ class SC8P053Compiler {
             this.emitLdAToTemp(t);
             this.emitLdSymToA(sym);
             if (index !== 0) {
-                this.asmLines.push(`ADDIA 0x${(index & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                this.asmLines.push(
+                    `ADDIA 0x${(index & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                );
             }
             this.emitIndirectSetFSR();
             this.emitLdTempToA(t);
@@ -1840,7 +2070,12 @@ class SC8P053Compiler {
         const declarators: Parser.SyntaxNode[] = [];
         for (let i = 0; i < node.childCount; i++) {
             const child = node.child(i);
-            if (child && child.isNamed && child.type !== 'sized_type_specifier' && child.type !== 'primitive_type') {
+            if (
+                child &&
+                child.isNamed &&
+                child.type !== 'sized_type_specifier' &&
+                child.type !== 'primitive_type'
+            ) {
                 declarators.push(child);
             }
         }
@@ -1857,40 +2092,73 @@ class SC8P053Compiler {
             const asmName = toAsmName(name);
 
             this.globalSymbols.set(name, {
-                name, asmName, typeInfo: {
+                name,
+                asmName,
+                typeInfo: {
                     type,
                     isArray,
                     arraySize,
-                    isPointer
-                }, ramAddr: addr, bank: this.getBankForAddr(addr),
-                isParam: false, paramIndex: 0, frameOffset: -1, isStatic: false
+                    isPointer,
+                },
+                ramAddr: addr,
+                bank: this.getBankForAddr(addr),
+                isParam: false,
+                paramIndex: 0,
+                frameOffset: -1,
+                isStatic: false,
             });
 
             const initDecl = this.findNodeByType(declaratorNode, 'init_declarator');
             const actualDeclarator = initDecl || declaratorNode;
-            const valueNode = actualDeclarator.childForFieldName ? actualDeclarator.childForFieldName('value') : null;
+            const valueNode = actualDeclarator.childForFieldName
+                ? actualDeclarator.childForFieldName('value')
+                : null;
             if (valueNode) {
                 if (isArray && valueNode.type === 'initializer_list') {
                     const values: number[] = [];
                     for (let i = 0; i < valueNode.childCount; i++) {
                         const child = valueNode.child(i);
-                        if (!child || child.type === ',' || child.type === '{' || child.type === '}') continue;
+                        if (
+                            !child ||
+                            child.type === ',' ||
+                            child.type === '{' ||
+                            child.type === '}'
+                        )
+                            continue;
                         const constVal = this.getConstantValue(child);
                         if (constVal !== null) {
-                            values.push(constVal & 0xFF);
+                            values.push(constVal & 0xff);
                         }
                     }
-                    this.globalInits.push({ asmName, value: 0, isArray: true, ramAddr: addr, arrayValues: values });
+                    this.globalInits.push({
+                        asmName,
+                        value: 0,
+                        isArray: true,
+                        ramAddr: addr,
+                        arrayValues: values,
+                    });
                 } else {
                     const constVal = this.getConstantValue(valueNode);
                     if (constVal !== null) {
-                        this.globalInits.push({ asmName, value: constVal & 0xFF, isArray: false, ramAddr: addr });
+                        this.globalInits.push({
+                            asmName,
+                            value: constVal & 0xff,
+                            isArray: false,
+                            ramAddr: addr,
+                        });
                     } else {
                         const addrVal = this.getGlobalAddressValue(valueNode);
                         if (addrVal !== null) {
-                            this.globalInits.push({ asmName, value: addrVal & 0xFF, isArray: false, ramAddr: addr });
+                            this.globalInits.push({
+                                asmName,
+                                value: addrVal & 0xff,
+                                isArray: false,
+                                ramAddr: addr,
+                            });
                         } else {
-                            throw new Error(`Global variable '${name}' initializer must be a constant expression (got: ${valueNode.text.trim()})`);
+                            throw new Error(
+                                `Global variable '${name}' initializer must be a constant expression (got: ${valueNode.text.trim()})`,
+                            );
                         }
                     }
                 }
@@ -1940,7 +2208,7 @@ class SC8P053Compiler {
             allPathsReturn: false,
             frameSize: 0,
             frameBase: -1,
-            returnIsPointer
+            returnIsPointer,
         };
 
         let frameOffset = 0;
@@ -1948,15 +2216,20 @@ class SC8P053Compiler {
         let paramIdx = 0;
         for (const p of params) {
             fn.localSymbols.set(p.name, {
-                name: p.name, asmName: p.asmName, typeInfo: {
+                name: p.name,
+                asmName: p.asmName,
+                typeInfo: {
                     type: p.type,
                     isArray: false,
                     arraySize: 0,
-                    isPointer: p.isPointer
+                    isPointer: p.isPointer,
                 },
-                ramAddr: -1, bank: -1,
-                isParam: true, paramIndex: paramIdx++,
-                frameOffset: frameOffset++, isStatic: false
+                ramAddr: -1,
+                bank: -1,
+                isParam: true,
+                paramIndex: paramIdx++,
+                frameOffset: frameOffset++,
+                isStatic: false,
             });
         }
 
@@ -1977,7 +2250,11 @@ class SC8P053Compiler {
             let isStatic = false;
             for (let i = 0; i < node.childCount; i++) {
                 const child = node.child(i);
-                if (child && child.type === 'storage_class_specifier' && child.text.trim() === 'static') {
+                if (
+                    child &&
+                    child.type === 'storage_class_specifier' &&
+                    child.text.trim() === 'static'
+                ) {
                     isStatic = true;
                     break;
                 }
@@ -1987,33 +2264,47 @@ class SC8P053Compiler {
             const declarators: Parser.SyntaxNode[] = [];
             for (let i = 0; i < node.childCount; i++) {
                 const child = node.child(i);
-                if (child && child.isNamed && child.type !== 'sized_type_specifier' && child.type !== 'primitive_type' && child.type !== 'storage_class_specifier') {
+                if (
+                    child &&
+                    child.isNamed &&
+                    child.type !== 'sized_type_specifier' &&
+                    child.type !== 'primitive_type' &&
+                    child.type !== 'storage_class_specifier'
+                ) {
                     declarators.push(child);
                 }
             }
 
             let offset = frameOffset;
             for (const declaratorNode of declarators) {
-                const { name, isArray, arraySize, isPointer } = this.parseDeclarator(declaratorNode);
+                const { name, isArray, arraySize, isPointer } =
+                    this.parseDeclarator(declaratorNode);
                 const size = isArray ? arraySize : 1;
                 const asmName = toAsmName(fn.name + '_' + name);
 
                 if (fn.localSymbols.has(name)) {
-                    throw new Error(`Variable '${name}' redeclared in function '${fn.name}' (shadowing not supported)`);
+                    throw new Error(
+                        `Variable '${name}' redeclared in function '${fn.name}' (shadowing not supported)`,
+                    );
                 }
 
                 if (isStatic) {
                     const addr = this.allocRam(size);
                     fn.localSymbols.set(name, {
-                        name, asmName, typeInfo: {
+                        name,
+                        asmName,
+                        typeInfo: {
                             type,
                             isArray,
                             arraySize,
-                            isPointer
+                            isPointer,
                         },
-                        ramAddr: addr, bank: this.getBankForAddr(addr),
-                        isParam: false, paramIndex: 0,
-                        frameOffset: -1, isStatic: true
+                        ramAddr: addr,
+                        bank: this.getBankForAddr(addr),
+                        isParam: false,
+                        paramIndex: 0,
+                        frameOffset: -1,
+                        isStatic: true,
                     });
                     const initDecl = this.findNodeByType(declaratorNode, 'init_declarator');
                     if (initDecl) {
@@ -2021,7 +2312,12 @@ class SC8P053Compiler {
                         if (valueNode) {
                             const constVal = this.getConstantValue(valueNode);
                             if (constVal !== null) {
-                                this.globalInits.push({ asmName, value: constVal & 0xFF, isArray: false, ramAddr: addr });
+                                this.globalInits.push({
+                                    asmName,
+                                    value: constVal & 0xff,
+                                    isArray: false,
+                                    ramAddr: addr,
+                                });
                             }
                         }
                     } else {
@@ -2029,15 +2325,20 @@ class SC8P053Compiler {
                     }
                 } else {
                     fn.localSymbols.set(name, {
-                        name, asmName, typeInfo: {
+                        name,
+                        asmName,
+                        typeInfo: {
                             type,
                             isArray,
                             arraySize,
-                            isPointer
+                            isPointer,
                         },
-                        ramAddr: -1, bank: -1,
-                        isParam: false, paramIndex: 0,
-                        frameOffset: offset, isStatic: false
+                        ramAddr: -1,
+                        bank: -1,
+                        isParam: false,
+                        paramIndex: 0,
+                        frameOffset: offset,
+                        isStatic: false,
                     });
                     offset += size;
                 }
@@ -2053,7 +2354,10 @@ class SC8P053Compiler {
         return offset;
     }
 
-    private extractParams(funcDeclarator: Parser.SyntaxNode, funcName: string): { name: string; asmName: string; type: Type; isPointer: boolean }[] {
+    private extractParams(
+        funcDeclarator: Parser.SyntaxNode,
+        funcName: string,
+    ): { name: string; asmName: string; type: Type; isPointer: boolean }[] {
         const params: { name: string; asmName: string; type: Type; isPointer: boolean }[] = [];
         const paramListNode = funcDeclarator.childForFieldName('parameters');
         if (!paramListNode) return params;
@@ -2065,7 +2369,12 @@ class SC8P053Compiler {
             const pDeclarator = child.childForFieldName('declarator');
             if (!pType || !pDeclarator) continue;
             const { name: pName, isPointer: pIsPointer } = this.parseDeclarator(pDeclarator);
-            params.push({ name: pName, asmName: toAsmName(funcName + '_' + pName), type: this.resolveType(pType), isPointer: pIsPointer });
+            params.push({
+                name: pName,
+                asmName: toAsmName(funcName + '_' + pName),
+                type: this.resolveType(pType),
+                isPointer: pIsPointer,
+            });
         }
         return params;
     }
@@ -2078,9 +2387,20 @@ class SC8P053Compiler {
         if (text === 'unsigned char') return 'u8';
 
         // Reject 16-bit and larger types
-        if (text === 'int' || text === 'short' || text === 'signed int' || text === 'signed short' ||
-            text === 'unsigned int' || text === 'unsigned short' || text === 'long' || text === 'unsigned' || text === 'signed') {
-            throw new Error(`Type '${text}' is not supported (only 8-bit types: char, signed char, unsigned char)`);
+        if (
+            text === 'int' ||
+            text === 'short' ||
+            text === 'signed int' ||
+            text === 'signed short' ||
+            text === 'unsigned int' ||
+            text === 'unsigned short' ||
+            text === 'long' ||
+            text === 'unsigned' ||
+            text === 'signed'
+        ) {
+            throw new Error(
+                `Type '${text}' is not supported (only 8-bit types: char, signed char, unsigned char)`,
+            );
         }
 
         if (text.startsWith('float') || text.startsWith('double')) {
@@ -2095,7 +2415,12 @@ class SC8P053Compiler {
         throw new Error(`Type '${text}' is not supported on this target`);
     }
 
-    private parseDeclarator(node: Parser.SyntaxNode): { name: string; isArray: boolean; arraySize: number; isPointer: boolean } {
+    private parseDeclarator(node: Parser.SyntaxNode): {
+        name: string;
+        isArray: boolean;
+        arraySize: number;
+        isPointer: boolean;
+    } {
         if (node.type === 'init_declarator') {
             const inner = node.childForFieldName('declarator');
             if (inner) return this.parseDeclarator(inner);
@@ -2105,7 +2430,12 @@ class SC8P053Compiler {
             for (let i = 0; i < node.childCount; i++) {
                 const child = node.child(i);
                 if (child && child.type === 'identifier') {
-                    return { name: child.text.trim(), isArray: false, arraySize: 0, isPointer: true };
+                    return {
+                        name: child.text.trim(),
+                        isArray: false,
+                        arraySize: 0,
+                        isPointer: true,
+                    };
                 }
                 if (child && child.type === 'array_declarator') {
                     const r = this.parseDeclarator(child);
@@ -2134,7 +2464,7 @@ class SC8P053Compiler {
                 name: nameNode ? nameNode.text.trim() : '',
                 isArray: true,
                 arraySize: size,
-                isPointer: false
+                isPointer: false,
             };
         }
         return { name: node.text.trim(), isArray: false, arraySize: 0, isPointer: false };
@@ -2164,8 +2494,12 @@ class SC8P053Compiler {
         return null;
     }
 
-    private generateCode(node: Parser.SyntaxNode, afterGlobalsAddr: number, afterGlobalsBank: number) {
-        const noopArray: any = { push: () => { }, findIndex: () => -1, length: 0 };
+    private generateCode(
+        node: Parser.SyntaxNode,
+        afterGlobalsAddr: number,
+        afterGlobalsBank: number,
+    ) {
+        const noopArray: any = { push: () => {}, findIndex: () => -1, length: 0 };
 
         this.dryRun = true;
         const savedLines = this.asmLines;
@@ -2214,11 +2548,15 @@ class SC8P053Compiler {
             this.ensureBank(init.ramAddr);
             if (init.isArray && init.arrayValues) {
                 for (let i = 0; i < init.arrayValues.length; i++) {
-                    this.asmLines.push(`LDIA 0x${init.arrayValues[i].toString(16).toUpperCase().padStart(2, '0')}`);
+                    this.asmLines.push(
+                        `LDIA 0x${init.arrayValues[i].toString(16).toUpperCase().padStart(2, '0')}`,
+                    );
                     this.asmLines.push(`LD ${init.asmName}_${i},A`);
                 }
             } else {
-                this.asmLines.push(`LDIA 0x${init.value.toString(16).toUpperCase().padStart(2, '0')}`);
+                this.asmLines.push(
+                    `LDIA 0x${init.value.toString(16).toUpperCase().padStart(2, '0')}`,
+                );
                 this.asmLines.push(`LD ${init.asmName},A`);
             }
         }
@@ -2305,20 +2643,45 @@ class SC8P053Compiler {
             this.asmLines.push(`;@LINE ${this.currentSourceLine}`);
         }
         switch (node.type) {
-            case 'expression_statement': this.emitExpressionStatement(node, fn); break;
-            case 'if_statement': this.emitIfStatement(node, fn); break;
-            case 'while_statement': this.emitWhileStatement(node, fn); break;
-            case 'for_statement': this.emitForStatement(node, fn); break;
-            case 'do_statement': this.emitDoWhileStatement(node, fn); break;
-            case 'return_statement': this.emitReturnStatement(node, fn); break;
-            case 'compound_statement': this.emitCompoundStatement(node, fn); break;
-            case 'break_statement': this.emitBreakStatement(fn); break;
-            case 'continue_statement': this.emitContinueStatement(fn); break;
-            case 'declaration': this.emitDeclarationInit(node, fn); break;
-            case 'switch_statement': this.emitSwitchStatement(node, fn); break;
-            case 'goto_statement': throw new Error(`'goto' is not supported on this target`);
-            case 'labeled_statement': throw new Error(`Labels are not supported on this target`);
-            default: throw new Error(`Unsupported statement type: '${node.type}'`);
+            case 'expression_statement':
+                this.emitExpressionStatement(node, fn);
+                break;
+            case 'if_statement':
+                this.emitIfStatement(node, fn);
+                break;
+            case 'while_statement':
+                this.emitWhileStatement(node, fn);
+                break;
+            case 'for_statement':
+                this.emitForStatement(node, fn);
+                break;
+            case 'do_statement':
+                this.emitDoWhileStatement(node, fn);
+                break;
+            case 'return_statement':
+                this.emitReturnStatement(node, fn);
+                break;
+            case 'compound_statement':
+                this.emitCompoundStatement(node, fn);
+                break;
+            case 'break_statement':
+                this.emitBreakStatement(fn);
+                break;
+            case 'continue_statement':
+                this.emitContinueStatement(fn);
+                break;
+            case 'declaration':
+                this.emitDeclarationInit(node, fn);
+                break;
+            case 'switch_statement':
+                this.emitSwitchStatement(node, fn);
+                break;
+            case 'goto_statement':
+                throw new Error(`'goto' is not supported on this target`);
+            case 'labeled_statement':
+                throw new Error(`Labels are not supported on this target`);
+            default:
+                throw new Error(`Unsupported statement type: '${node.type}'`);
         }
     }
 
@@ -2453,7 +2816,9 @@ class SC8P053Compiler {
                     const constVal = this.getConstantValue(valueNode);
                     if (constVal === null) continue;
                     this.emitLdTempToA(t);
-                    this.asmLines.push(`HSUBIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
+                    this.asmLines.push(
+                        `HSUBIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                    );
                     this.asmLines.push('SZB STATUS,2');
                     this.asmLines.push(`JP ${caseLabels[i]}`);
                 }
@@ -2471,8 +2836,28 @@ class SC8P053Compiler {
             this.emitLabel(caseLabels[i]);
             for (let j = 0; j < caseNode.childCount; j++) {
                 const child = caseNode.child(j);
-                if (child && child.type !== 'case' && child.type !== 'default' && child.type !== ':' && child.type !== 'number_literal' && child.type !== 'char_literal' && child.type !== 'identifier') {
-                    if (child.type === 'expression_statement' || child.type === 'break_statement' || child.type === 'continue_statement' || child.type === 'declaration' || child.type === 'compound_statement' || child.type === 'if_statement' || child.type === 'while_statement' || child.type === 'for_statement' || child.type === 'do_statement' || child.type === 'return_statement' || child.type === 'switch_statement') {
+                if (
+                    child &&
+                    child.type !== 'case' &&
+                    child.type !== 'default' &&
+                    child.type !== ':' &&
+                    child.type !== 'number_literal' &&
+                    child.type !== 'char_literal' &&
+                    child.type !== 'identifier'
+                ) {
+                    if (
+                        child.type === 'expression_statement' ||
+                        child.type === 'break_statement' ||
+                        child.type === 'continue_statement' ||
+                        child.type === 'declaration' ||
+                        child.type === 'compound_statement' ||
+                        child.type === 'if_statement' ||
+                        child.type === 'while_statement' ||
+                        child.type === 'for_statement' ||
+                        child.type === 'do_statement' ||
+                        child.type === 'return_statement' ||
+                        child.type === 'switch_statement'
+                    ) {
                         this.emitStatement(child, fn);
                     }
                 }
@@ -2522,7 +2907,11 @@ class SC8P053Compiler {
         let isStaticDecl = false;
         for (let i = 0; i < node.childCount; i++) {
             const child = node.child(i);
-            if (child && child.type === 'storage_class_specifier' && child.text.trim() === 'static') {
+            if (
+                child &&
+                child.type === 'storage_class_specifier' &&
+                child.text.trim() === 'static'
+            ) {
                 isStaticDecl = true;
                 break;
             }
@@ -2531,11 +2920,18 @@ class SC8P053Compiler {
         for (let i = 0; i < node.childCount; i++) {
             const child = node.child(i);
             if (!child || !child.isNamed) continue;
-            if (child.type === 'sized_type_specifier' || child.type === 'primitive_type' || child.type === 'storage_class_specifier') continue;
+            if (
+                child.type === 'sized_type_specifier' ||
+                child.type === 'primitive_type' ||
+                child.type === 'storage_class_specifier'
+            )
+                continue;
 
             const initDecl = this.findNodeByType(child, 'init_declarator');
             const actualNode = initDecl || child;
-            const valueNode = actualNode.childForFieldName ? actualNode.childForFieldName('value') : null;
+            const valueNode = actualNode.childForFieldName
+                ? actualNode.childForFieldName('value')
+                : null;
 
             const declNode = initDecl ? initDecl.childForFieldName('declarator') : child;
             let sym: Sym | null = null;
@@ -2568,10 +2964,18 @@ class SC8P053Compiler {
                     let elemIdx = 0;
                     for (let j = 0; j < valueNode.childCount; j++) {
                         const initChild = valueNode.child(j);
-                        if (!initChild || initChild.type === ',' || initChild.type === '{' || initChild.type === '}') continue;
+                        if (
+                            !initChild ||
+                            initChild.type === ',' ||
+                            initChild.type === '{' ||
+                            initChild.type === '}'
+                        )
+                            continue;
                         const constVal = this.getConstantValue(initChild);
                         if (constVal !== null) {
-                            this.asmLines.push(`LDIA 0x${(constVal & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                            this.asmLines.push(
+                                `LDIA 0x${(constVal & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                            );
                         } else {
                             this.emitLoadAccumulator(initChild, fn);
                         }
@@ -2633,7 +3037,12 @@ class SC8P053Compiler {
         if (fn.continueLabel) this.asmLines.push(`JP ${fn.continueLabel}`);
     }
 
-    private emitCondition(node: Parser.SyntaxNode, fn: Fn, targetLabel: string, jumpOnTrue: boolean) {
+    private emitCondition(
+        node: Parser.SyntaxNode,
+        fn: Fn,
+        targetLabel: string,
+        jumpOnTrue: boolean,
+    ) {
         const inner = this.unwrapParentheses(node);
 
         if (inner.type === 'binary_expression') {
@@ -2727,7 +3136,12 @@ class SC8P053Compiler {
         return 'u8';
     }
 
-    private emitComparison(node: Parser.SyntaxNode, fn: Fn, targetLabel: string, jumpOnTrue: boolean) {
+    private emitComparison(
+        node: Parser.SyntaxNode,
+        fn: Fn,
+        targetLabel: string,
+        jumpOnTrue: boolean,
+    ) {
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
         const operator = this.getChildByField(node, 'operator');
@@ -2735,7 +3149,8 @@ class SC8P053Compiler {
 
         const rightConst = this.getConstantValue(right);
         const leftConst = this.getConstantValue(left);
-        const isSigned = this.inferExprType(left, fn) === 'i8' || this.inferExprType(right, fn) === 'i8';
+        const isSigned =
+            this.inferExprType(left, fn) === 'i8' || this.inferExprType(right, fn) === 'i8';
 
         if (isSigned && ['<', '>', '<=', '>='].includes(operator.text)) {
             this.emitSignedComparison(left, right, operator.text, fn, targetLabel, jumpOnTrue);
@@ -2744,9 +3159,18 @@ class SC8P053Compiler {
 
         if (rightConst !== null) {
             this.emitLoadAccumulator(left, fn);
-            this.asmLines.push(`HSUBIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`);
+            this.asmLines.push(
+                `HSUBIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`,
+            );
         } else if (leftConst !== null) {
-            const reversedOp: Record<string, string> = { '<': '>', '>': '<', '<=': '>=', '>=': '<=', '==': '==', '!=': '!=' };
+            const reversedOp: Record<string, string> = {
+                '<': '>',
+                '>': '<',
+                '<=': '>=',
+                '>=': '<=',
+                '==': '==',
+                '!=': '!=',
+            };
             this.emitLoadAccumulator(right, fn);
             this.asmLines.push(`HSUBIA 0x${leftConst.toString(16).toUpperCase().padStart(2, '0')}`);
             this.emitComparisonFlags(reversedOp[operator.text], fn, targetLabel, jumpOnTrue);
@@ -2778,19 +3202,35 @@ class SC8P053Compiler {
         this.emitComparisonFlags(operator.text, fn, targetLabel, jumpOnTrue);
     }
 
-    private emitSignedComparison(left: Parser.SyntaxNode, right: Parser.SyntaxNode, op: string, fn: Fn, targetLabel: string, jumpOnTrue: boolean) {
+    private emitSignedComparison(
+        left: Parser.SyntaxNode,
+        right: Parser.SyntaxNode,
+        op: string,
+        fn: Fn,
+        targetLabel: string,
+        jumpOnTrue: boolean,
+    ) {
         const rightConst = this.getConstantValue(right);
         const leftConst = this.getConstantValue(left);
 
         if (rightConst !== null) {
             this.emitLoadAccumulator(left, fn);
             this.asmLines.push('XORIA 0x80');
-            this.asmLines.push(`HSUBIA 0x${((rightConst ^ 0x80) & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+            this.asmLines.push(
+                `HSUBIA 0x${((rightConst ^ 0x80) & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+            );
         } else if (leftConst !== null) {
-            const reversedOp: Record<string, string> = { '<': '>', '>': '<', '<=': '>=', '>=': '<=' };
+            const reversedOp: Record<string, string> = {
+                '<': '>',
+                '>': '<',
+                '<=': '>=',
+                '>=': '<=',
+            };
             this.emitLoadAccumulator(right, fn);
             this.asmLines.push('XORIA 0x80');
-            this.asmLines.push(`HSUBIA 0x${((leftConst ^ 0x80) & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+            this.asmLines.push(
+                `HSUBIA 0x${((leftConst ^ 0x80) & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+            );
             this.emitComparisonFlags(reversedOp[op], fn, targetLabel, jumpOnTrue);
             return;
         } else {
@@ -2808,8 +3248,13 @@ class SC8P053Compiler {
 
     private emitComparisonFlags(op: string, fn: Fn, targetLabel: string, jumpOnTrue: boolean) {
         if (op === '<') {
-            if (jumpOnTrue) { this.asmLines.push('SNZB STATUS,0'); this.asmLines.push(`JP ${targetLabel}`); }
-            else { this.asmLines.push('SZB STATUS,0'); this.asmLines.push(`JP ${targetLabel}`); }
+            if (jumpOnTrue) {
+                this.asmLines.push('SNZB STATUS,0');
+                this.asmLines.push(`JP ${targetLabel}`);
+            } else {
+                this.asmLines.push('SZB STATUS,0');
+                this.asmLines.push(`JP ${targetLabel}`);
+            }
         } else if (op === '>') {
             if (jumpOnTrue) {
                 const cont = this.newLabel(fn);
@@ -2841,18 +3286,38 @@ class SC8P053Compiler {
                 this.emitLabel(cont);
             }
         } else if (op === '>=') {
-            if (jumpOnTrue) { this.asmLines.push('SZB STATUS,0'); this.asmLines.push(`JP ${targetLabel}`); }
-            else { this.asmLines.push('SNZB STATUS,0'); this.asmLines.push(`JP ${targetLabel}`); }
+            if (jumpOnTrue) {
+                this.asmLines.push('SZB STATUS,0');
+                this.asmLines.push(`JP ${targetLabel}`);
+            } else {
+                this.asmLines.push('SNZB STATUS,0');
+                this.asmLines.push(`JP ${targetLabel}`);
+            }
         } else if (op === '==') {
-            if (jumpOnTrue) { this.asmLines.push('SZB STATUS,2'); this.asmLines.push(`JP ${targetLabel}`); }
-            else { this.asmLines.push('SNZB STATUS,2'); this.asmLines.push(`JP ${targetLabel}`); }
+            if (jumpOnTrue) {
+                this.asmLines.push('SZB STATUS,2');
+                this.asmLines.push(`JP ${targetLabel}`);
+            } else {
+                this.asmLines.push('SNZB STATUS,2');
+                this.asmLines.push(`JP ${targetLabel}`);
+            }
         } else if (op === '!=') {
-            if (jumpOnTrue) { this.asmLines.push('SNZB STATUS,2'); this.asmLines.push(`JP ${targetLabel}`); }
-            else { this.asmLines.push('SZB STATUS,2'); this.asmLines.push(`JP ${targetLabel}`); }
+            if (jumpOnTrue) {
+                this.asmLines.push('SNZB STATUS,2');
+                this.asmLines.push(`JP ${targetLabel}`);
+            } else {
+                this.asmLines.push('SZB STATUS,2');
+                this.asmLines.push(`JP ${targetLabel}`);
+            }
         }
     }
 
-    private emitLogicalOp(node: Parser.SyntaxNode, fn: Fn, targetLabel: string, jumpOnTrue: boolean) {
+    private emitLogicalOp(
+        node: Parser.SyntaxNode,
+        fn: Fn,
+        targetLabel: string,
+        jumpOnTrue: boolean,
+    ) {
         const operator = this.getChildByField(node, 'operator');
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
@@ -2885,10 +3350,18 @@ class SC8P053Compiler {
         const inner = this.unwrapParentheses(node);
 
         switch (inner.type) {
-            case 'assignment_expression': this.emitAssignment(inner, fn); break;
-            case 'call_expression': this.emitCallExpression(inner, fn); break;
-            case 'update_expression': this.emitUpdateExpression(inner, fn); break;
-            default: this.emitLoadAccumulator(inner, fn); break;
+            case 'assignment_expression':
+                this.emitAssignment(inner, fn);
+                break;
+            case 'call_expression':
+                this.emitCallExpression(inner, fn);
+                break;
+            case 'update_expression':
+                this.emitUpdateExpression(inner, fn);
+                break;
+            default:
+                this.emitLoadAccumulator(inner, fn);
+                break;
         }
     }
 
@@ -2916,9 +3389,12 @@ class SC8P053Compiler {
     private typeInfoOf(node: Parser.SyntaxNode, fn: Fn): TypeInfo {
         const inner = this.unwrapParentheses(node);
 
-        if (inner.type === 'number_literal') return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
-        if (inner.type === 'char_literal') return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
-        if (inner.type === 'string_literal') return { type: 'u8', isArray: false, arraySize: 0, isPointer: true };
+        if (inner.type === 'number_literal')
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        if (inner.type === 'char_literal')
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        if (inner.type === 'string_literal')
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: true };
 
         if (inner.type === 'pointer_declarator') {
             const sym = this.resolveSymbol(inner, fn);
@@ -2948,7 +3424,9 @@ class SC8P053Compiler {
                 if (argNode) {
                     const argType = this.typeInfoOf(argNode, fn);
                     if (!argType.isPointer) {
-                        throw new Error(`Cannot dereference non-pointer type '${this.typeInfoToString(argType)}'`);
+                        throw new Error(
+                            `Cannot dereference non-pointer type '${this.typeInfoToString(argType)}'`,
+                        );
                     }
                     // 解引用操作：返回指针指向的类型
                     return { type: argType.type, isArray: false, arraySize: 0, isPointer: false };
@@ -2964,7 +3442,9 @@ class SC8P053Compiler {
             if (arrayNode) {
                 const arrType = this.typeInfoOf(arrayNode, fn);
                 if (!arrType.isArray && !arrType.isPointer) {
-                    throw new Error(`Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer`);
+                    throw new Error(
+                        `Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer`,
+                    );
                 }
                 checkedArray = true;
             }
@@ -2974,7 +3454,9 @@ class SC8P053Compiler {
                     if (c && c.type !== '[' && c.type !== ']') {
                         const arrType = this.typeInfoOf(c, fn);
                         if (!arrType.isArray && !arrType.isPointer) {
-                            throw new Error(`Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer`);
+                            throw new Error(
+                                `Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer`,
+                            );
                         }
                         break;
                     }
@@ -2988,7 +3470,8 @@ class SC8P053Compiler {
             const op = opNode ? opNode.text : '';
             const left = inner.childForFieldName('left');
             const right = inner.childForFieldName('right');
-            if (!left || !right) return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+            if (!left || !right)
+                return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
             const leftType = this.typeInfoOf(left, fn);
             const rightType = this.typeInfoOf(right, fn);
 
@@ -2999,7 +3482,8 @@ class SC8P053Compiler {
                     }
                     if (leftType.isPointer && rightType.isPointer) {
                         if (op === '+') throw new Error(`Cannot add two pointers`);
-                        if (op === '-') return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+                        if (op === '-')
+                            return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
                     }
                     // 指针加减整数：结果仍是指针，保持基础类型
                     const ptrType = leftType.isPointer ? leftType : rightType;
@@ -3033,7 +3517,9 @@ class SC8P053Compiler {
                 }
                 if (op === '*') {
                     if (!argType.isPointer) {
-                        throw new Error(`Cannot dereference non-pointer type '${this.typeInfoToString(argType)}'`);
+                        throw new Error(
+                            `Cannot dereference non-pointer type '${this.typeInfoToString(argType)}'`,
+                        );
                     }
                     // 解引用：返回指针指向的类型
                     return { type: argType.type, isArray: false, arraySize: 0, isPointer: false };
@@ -3048,9 +3534,16 @@ class SC8P053Compiler {
                 const fnName = fnNode.text.trim();
                 const fnInfo = this.fns.get(fnName);
                 if (fnInfo) {
-                    if (fnInfo.returnIsPointer) return { type: 'u8', isArray: false, arraySize: 0, isPointer: true };
-                    if (fnInfo.returnType === 'void') return { type: 'void', isArray: false, arraySize: 0, isPointer: false };
-                    return { type: fnInfo.returnType, isArray: false, arraySize: 0, isPointer: false };
+                    if (fnInfo.returnIsPointer)
+                        return { type: 'u8', isArray: false, arraySize: 0, isPointer: true };
+                    if (fnInfo.returnType === 'void')
+                        return { type: 'void', isArray: false, arraySize: 0, isPointer: false };
+                    return {
+                        type: fnInfo.returnType,
+                        isArray: false,
+                        arraySize: 0,
+                        isPointer: false,
+                    };
                 }
             }
             return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
@@ -3058,7 +3551,8 @@ class SC8P053Compiler {
 
         if (inner.type === 'cast_expression') {
             const typeNode = inner.childForFieldName('type');
-            if (typeNode && typeNode.text.includes('*')) return { type: 'u8', isArray: false, arraySize: 0, isPointer: true };
+            if (typeNode && typeNode.text.includes('*'))
+                return { type: 'u8', isArray: false, arraySize: 0, isPointer: true };
             return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
         }
 
@@ -3068,7 +3562,8 @@ class SC8P053Compiler {
             return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
         }
 
-        if (inner.type === 'sizeof_expression') return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
+        if (inner.type === 'sizeof_expression')
+            return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
 
         if (inner.type === 'conditional_expression') {
             const consequent = inner.childForFieldName('consequence');
@@ -3080,7 +3575,8 @@ class SC8P053Compiler {
             const children = inner.children;
             for (let i = children.length - 1; i >= 0; i--) {
                 const c = children[i];
-                if (c && c.type !== ',' && c.type !== 'comma_expression') return this.typeInfoOf(c, fn);
+                if (c && c.type !== ',' && c.type !== 'comma_expression')
+                    return this.typeInfoOf(c, fn);
             }
             return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
         }
@@ -3123,7 +3619,9 @@ class SC8P053Compiler {
             if (arrayNode) {
                 const arrType = this.typeInfoOf(arrayNode, fn);
                 if (!arrType.isArray && !arrType.isPointer) {
-                    throw new Error(`Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer`);
+                    throw new Error(
+                        `Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer`,
+                    );
                 }
                 checkedArray = true;
             }
@@ -3133,7 +3631,9 @@ class SC8P053Compiler {
                     if (c && c.type !== '[' && c.type !== ']') {
                         const arrType = this.typeInfoOf(c, fn);
                         if (!arrType.isArray && !arrType.isPointer) {
-                            throw new Error(`Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer`);
+                            throw new Error(
+                                `Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer`,
+                            );
                         }
                         break;
                     }
@@ -3149,7 +3649,9 @@ class SC8P053Compiler {
                 if (argNode) {
                     const argType = this.typeInfoOf(argNode, fn);
                     if (!argType.isPointer) {
-                        throw new Error(`Cannot dereference non-pointer type '${this.typeInfoToString(argType)}'`);
+                        throw new Error(
+                            `Cannot dereference non-pointer type '${this.typeInfoToString(argType)}'`,
+                        );
                     }
                 }
                 return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
@@ -3164,7 +3666,9 @@ class SC8P053Compiler {
                 if (argNode) {
                     const argType = this.typeInfoOf(argNode, fn);
                     if (!argType.isPointer) {
-                        throw new Error(`Cannot dereference non-pointer type '${this.typeInfoToString(argType)}'`);
+                        throw new Error(
+                            `Cannot dereference non-pointer type '${this.typeInfoToString(argType)}'`,
+                        );
                     }
                 }
                 return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
@@ -3183,18 +3687,31 @@ class SC8P053Compiler {
                 throw new Error(`Cannot use '${op}' on pointer - only += and -= are allowed`);
             }
             if (rightType.isPointer || rightType.isArray) {
-                throw new Error(`Cannot ${op === '+=' ? 'add' : 'subtract'} pointer to/from pointer`);
+                throw new Error(
+                    `Cannot ${op === '+=' ? 'add' : 'subtract'} pointer to/from pointer`,
+                );
             }
         }
         if (op === '=') {
-            if (leftType.isPointer && !rightType.isPointer && !rightType.isArray && rightType.type !== 'u8') {
-                throw new Error(`Cannot assign '${this.typeInfoToString(rightType)}' to pointer type '${this.typeInfoToString(leftType)}'`);
+            if (
+                leftType.isPointer &&
+                !rightType.isPointer &&
+                !rightType.isArray &&
+                rightType.type !== 'u8'
+            ) {
+                throw new Error(
+                    `Cannot assign '${this.typeInfoToString(rightType)}' to pointer type '${this.typeInfoToString(leftType)}'`,
+                );
             }
             if (!leftType.isPointer && leftType.type !== 'void' && rightType.isPointer) {
-                throw new Error(`Cannot assign pointer to non-pointer type '${this.typeInfoToString(leftType)}'`);
+                throw new Error(
+                    `Cannot assign pointer to non-pointer type '${this.typeInfoToString(leftType)}'`,
+                );
             }
             if (!leftType.isPointer && rightType.isArray) {
-                throw new Error(`Cannot assign array to non-pointer type '${this.typeInfoToString(leftType)}'`);
+                throw new Error(
+                    `Cannot assign array to non-pointer type '${this.typeInfoToString(leftType)}'`,
+                );
             }
         }
     }
@@ -3321,8 +3838,15 @@ class SC8P053Compiler {
                     if (fn.returnType !== 'void' && !fn.returnIsPointer && retType.isArray) {
                         throw new Error(`Cannot return array from function`);
                     }
-                    if (fn.returnIsPointer && !retType.isPointer && !retType.isArray && retType.type !== 'u8') {
-                        throw new Error(`Cannot return '${this.typeInfoToString(retType)}' from pointer function`);
+                    if (
+                        fn.returnIsPointer &&
+                        !retType.isPointer &&
+                        !retType.isArray &&
+                        retType.type !== 'u8'
+                    ) {
+                        throw new Error(
+                            `Cannot return '${this.typeInfoToString(retType)}' from pointer function`,
+                        );
                     }
                 }
             }
@@ -3461,9 +3985,11 @@ class SC8P053Compiler {
                 const addr = this.extractAddr(innerLeft);
                 if (addr !== null) {
                     this.emitLoadAccumulator(right, fn);
-                    const equAddr = addr & 0x7F;
+                    const equAddr = addr & 0x7f;
                     this.ensureBank(addr);
-                    this.asmLines.push(`LD 0x${equAddr.toString(16).toUpperCase().padStart(2, '0')},A`);
+                    this.asmLines.push(
+                        `LD 0x${equAddr.toString(16).toUpperCase().padStart(2, '0')},A`,
+                    );
                 } else {
                     const opNode = innerLeft.child(0);
                     const argNode = innerLeft.child(1);
@@ -3529,15 +4055,31 @@ class SC8P053Compiler {
             const constVal = this.getConstantValue(right);
             switch (op) {
                 case '+=':
-                    if (constVal !== null) this.asmLines.push(`ADDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ADDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ADDA', t); } }
-                    break;
-                case '-=':
-                    if (constVal !== null) this.asmLines.push(`HSUBIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `ADDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
                     else {
                         const rsym = this.resolveSymbol(right, fn);
-                        if (rsym) { this.emitOpSym('HSUBA', rsym); }
+                        if (rsym) this.emitOpSym('ADDA', rsym);
                         else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('ADDA', t);
+                        }
+                    }
+                    break;
+                case '-=':
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `HSUBIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) {
+                            this.emitOpSym('HSUBA', rsym);
+                        } else {
                             this.emitLoadAccumulator(right, fn);
                             const t = this.allocTemp();
                             this.emitLdAToTemp(t);
@@ -3547,16 +4089,52 @@ class SC8P053Compiler {
                     }
                     break;
                 case '&=':
-                    if (constVal !== null) this.asmLines.push(`ANDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ANDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ANDA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `ANDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('ANDA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('ANDA', t);
+                        }
+                    }
                     break;
                 case '|=':
-                    if (constVal !== null) this.asmLines.push(`ORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ORA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `ORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('ORA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('ORA', t);
+                        }
+                    }
                     break;
                 case '^=':
-                    if (constVal !== null) this.asmLines.push(`XORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('XORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('XORA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `XORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('XORA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('XORA', t);
+                        }
+                    }
                     break;
             }
             this.emitLdAToSym(sym);
@@ -3595,7 +4173,9 @@ class SC8P053Compiler {
         const t2 = this.allocTemp();
         this.emitLdAToTemp(t2);
         if (arraySym.typeInfo.isArray) {
-            this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+            this.asmLines.push(
+                `LDIA 0x${(arraySym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+            );
             this.emitOpTemp('ADDA', t2);
         } else {
             this.emitLdSymToA(arraySym);
@@ -3608,7 +4188,12 @@ class SC8P053Compiler {
         this.asmLines.push('LD INDF,A');
     }
 
-    private emitPointerCompoundAssign(left: Parser.SyntaxNode, right: Parser.SyntaxNode, fn: Fn, op: string) {
+    private emitPointerCompoundAssign(
+        left: Parser.SyntaxNode,
+        right: Parser.SyntaxNode,
+        fn: Fn,
+        op: string,
+    ) {
         const opNode = left.child(0);
         const argNode = left.child(1);
         if (!opNode || !argNode || opNode.text !== '*') return;
@@ -3618,24 +4203,85 @@ class SC8P053Compiler {
             const constVal = this.getConstantValue(right);
             switch (op) {
                 case '+=':
-                    if (constVal !== null) this.asmLines.push(`ADDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ADDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ADDA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `ADDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('ADDA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('ADDA', t);
+                        }
+                    }
                     break;
                 case '-=':
-                    if (constVal !== null) this.asmLines.push(`HSUBIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('HSUBA', rsym); else { this.emitLoadAccumulator(right, fn); const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(left, fn); this.emitOpTemp('HSUBA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `HSUBIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('HSUBA', rsym);
+                        else {
+                            this.emitLoadAccumulator(right, fn);
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(left, fn);
+                            this.emitOpTemp('HSUBA', t);
+                        }
+                    }
                     break;
                 case '&=':
-                    if (constVal !== null) this.asmLines.push(`ANDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ANDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ANDA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `ANDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('ANDA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('ANDA', t);
+                        }
+                    }
                     break;
                 case '|=':
-                    if (constVal !== null) this.asmLines.push(`ORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ORA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `ORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('ORA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('ORA', t);
+                        }
+                    }
                     break;
                 case '^=':
-                    if (constVal !== null) this.asmLines.push(`XORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('XORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('XORA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `XORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('XORA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('XORA', t);
+                        }
+                    }
                     break;
             }
             const t = this.allocTemp();
@@ -3713,7 +4359,12 @@ class SC8P053Compiler {
         }
     }
 
-    private emitPointerCompoundAssignUnary(argNode: Parser.SyntaxNode, right: Parser.SyntaxNode, fn: Fn, op: string) {
+    private emitPointerCompoundAssignUnary(
+        argNode: Parser.SyntaxNode,
+        right: Parser.SyntaxNode,
+        fn: Fn,
+        op: string,
+    ) {
         if (['+=', '-=', '&=', '|=', '^='].includes(op)) {
             this.emitLoadAccumulator(argNode, fn);
             this.emitIndirectSetFSR();
@@ -3721,31 +4372,99 @@ class SC8P053Compiler {
             const constVal = this.getConstantValue(right);
             switch (op) {
                 case '+=':
-                    if (constVal !== null) this.asmLines.push(`ADDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ADDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ADDA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `ADDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('ADDA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('ADDA', t);
+                        }
+                    }
                     break;
                 case '-=':
-                    if (constVal !== null) this.asmLines.push(`HSUBIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('HSUBA', rsym); else { this.emitLoadAccumulator(right, fn); const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(argNode, fn); this.emitIndirectSetFSR(); this.asmLines.push('LD A,INDF'); this.emitOpTemp('HSUBA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `HSUBIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('HSUBA', rsym);
+                        else {
+                            this.emitLoadAccumulator(right, fn);
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(argNode, fn);
+                            this.emitIndirectSetFSR();
+                            this.asmLines.push('LD A,INDF');
+                            this.emitOpTemp('HSUBA', t);
+                        }
+                    }
                     break;
                 case '&=':
-                    if (constVal !== null) this.asmLines.push(`ANDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ANDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ANDA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `ANDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('ANDA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('ANDA', t);
+                        }
+                    }
                     break;
                 case '|=':
-                    if (constVal !== null) this.asmLines.push(`ORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ORA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `ORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('ORA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('ORA', t);
+                        }
+                    }
                     break;
                 case '^=':
-                    if (constVal !== null) this.asmLines.push(`XORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('XORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('XORA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `XORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('XORA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('XORA', t);
+                        }
+                    }
                     break;
             }
             this.asmLines.push('LD INDF,A');
         }
     }
 
-    private emitArrayCompoundAssign(left: Parser.SyntaxNode, right: Parser.SyntaxNode, fn: Fn, op: string) {
+    private emitArrayCompoundAssign(
+        left: Parser.SyntaxNode,
+        right: Parser.SyntaxNode,
+        fn: Fn,
+        op: string,
+    ) {
         const arraySym = this.resolveArraySymbol(left, fn);
         let indexNode: Parser.SyntaxNode | null = left.childForFieldName('index');
         if (!indexNode) {
@@ -3771,24 +4490,84 @@ class SC8P053Compiler {
             }
             switch (op) {
                 case '+=':
-                    if (constVal !== null) this.asmLines.push(`ADDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ADDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ADDA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `ADDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('ADDA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('ADDA', t);
+                        }
+                    }
                     break;
                 case '-=':
-                    if (constVal !== null) this.asmLines.push(`HSUBIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('HSUBA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('SUBA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `HSUBIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('HSUBA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('SUBA', t);
+                        }
+                    }
                     break;
                 case '&=':
-                    if (constVal !== null) this.asmLines.push(`ANDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ANDA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ANDA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `ANDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('ANDA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('ANDA', t);
+                        }
+                    }
                     break;
                 case '|=':
-                    if (constVal !== null) this.asmLines.push(`ORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('ORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('ORA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `ORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('ORA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('ORA', t);
+                        }
+                    }
                     break;
                 case '^=':
-                    if (constVal !== null) this.asmLines.push(`XORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
-                    else { const rsym = this.resolveSymbol(right, fn); if (rsym) this.emitOpSym('XORA', rsym); else { const t = this.allocTemp(); this.emitLdAToTemp(t); this.emitLoadAccumulator(right, fn); this.emitOpTemp('XORA', t); } }
+                    if (constVal !== null)
+                        this.asmLines.push(
+                            `XORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('XORA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('XORA', t);
+                        }
+                    }
                     break;
             }
             if (constIndex !== null) {
@@ -3799,7 +4578,9 @@ class SC8P053Compiler {
                 this.emitLoadAccumulator(indexNode, fn);
                 const t2 = this.allocTemp();
                 this.emitLdAToTemp(t2);
-                this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                this.asmLines.push(
+                    `LDIA 0x${(arraySym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                );
                 this.emitOpTemp('ADDA', t2);
                 this.asmLines.push('CLRB STATUS,5');
                 this.currentAsmBank = 0;
@@ -3934,7 +4715,9 @@ class SC8P053Compiler {
                 this.emitLoadAccumulator(indexNode, fn);
                 const t4 = this.allocTemp();
                 this.emitLdAToTemp(t4);
-                this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                this.asmLines.push(
+                    `LDIA 0x${(arraySym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                );
                 this.emitOpTemp('ADDA', t4);
                 this.asmLines.push('CLRB STATUS,5');
                 this.currentAsmBank = 0;
@@ -4030,7 +4813,9 @@ class SC8P053Compiler {
                     this.emitLoadAccumulator(indexNode, fn);
                     const t4 = this.allocTemp();
                     this.emitLdAToTemp(t4);
-                    this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                    this.asmLines.push(
+                        `LDIA 0x${(arraySym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                    );
                     this.emitOpTemp('ADDA', t4);
                     this.asmLines.push('CLRB STATUS,5');
                     this.currentAsmBank = 0;
@@ -4048,7 +4833,9 @@ class SC8P053Compiler {
                     this.emitLoadAccumulator(indexNode, fn);
                     const t4 = this.allocTemp();
                     this.emitLdAToTemp(t4);
-                    this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                    this.asmLines.push(
+                        `LDIA 0x${(arraySym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                    );
                     this.emitOpTemp('ADDA', t4);
                     this.asmLines.push('CLRB STATUS,5');
                     this.currentAsmBank = 0;
@@ -4060,7 +4847,7 @@ class SC8P053Compiler {
         }
     }
 
-    private emitCallExpression(node: Parser.SyntaxNode, fn: Fn, usedAsValue: boolean = false) {
+    private emitCallExpression(node: Parser.SyntaxNode, fn: Fn, usedAsValue = false) {
         const funcNode = node.childForFieldName('function');
         const argsNode = node.childForFieldName('arguments');
         if (!funcNode) return;
@@ -4080,13 +4867,18 @@ class SC8P053Compiler {
             const args: Parser.SyntaxNode[] = [];
             for (let i = 0; i < argsNode.childCount; i++) {
                 const child = argsNode.child(i);
-                if (child && child.type !== ',' && child.type !== '(' && child.type !== ')') args.push(child);
+                if (child && child.type !== ',' && child.type !== '(' && child.type !== ')')
+                    args.push(child);
             }
             if (args.length < targetFunc.params.length) {
-                throw new Error(`Function '${funcName}' expects ${targetFunc.params.length} argument(s), but ${args.length} provided`);
+                throw new Error(
+                    `Function '${funcName}' expects ${targetFunc.params.length} argument(s), but ${args.length} provided`,
+                );
             }
             if (args.length > targetFunc.params.length) {
-                throw new Error(`Function '${funcName}' expects ${targetFunc.params.length} argument(s), but ${args.length} provided`);
+                throw new Error(
+                    `Function '${funcName}' expects ${targetFunc.params.length} argument(s), but ${args.length} provided`,
+                );
             }
             const temps: number[] = [];
             for (let i = 0; i < args.length && i < targetFunc.params.length; i++) {
@@ -4112,7 +4904,7 @@ class SC8P053Compiler {
 
     private emitUpdateExpression(node: Parser.SyntaxNode, fn: Fn) {
         const operator = this.getChildByField(node, 'operator');
-        let argument = node.childForFieldName('argument');
+        const argument = node.childForFieldName('argument');
         if (!operator || !argument) return;
 
         const isPrefix = operator.startPosition.column < argument.startPosition.column;
@@ -4231,7 +5023,9 @@ class SC8P053Compiler {
                     this.emitLoadAccumulator(indexNode, fn);
                     const t3 = this.allocTemp();
                     this.emitLdAToTemp(t3);
-                    this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                    this.asmLines.push(
+                        `LDIA 0x${(arraySym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                    );
                     this.emitOpTemp('ADDA', t3);
                     this.asmLines.push('CLRB STATUS,5');
                     this.currentAsmBank = 0;
@@ -4266,7 +5060,9 @@ class SC8P053Compiler {
                     this.emitLoadAccumulator(indexNode, fn);
                     const t3 = this.allocTemp();
                     this.emitLdAToTemp(t3);
-                    this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                    this.asmLines.push(
+                        `LDIA 0x${(arraySym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                    );
                     this.emitOpTemp('ADDA', t3);
                     this.asmLines.push('CLRB STATUS,5');
                     this.currentAsmBank = 0;
@@ -4284,7 +5080,9 @@ class SC8P053Compiler {
         const sym = this.resolveSymbol(argument, fn);
         if (!sym) {
             if (!this.isValidLvalue(argument, fn)) {
-                throw new Error(`Cannot increment/decrement '${argument.text.trim()}' - not an lvalue`);
+                throw new Error(
+                    `Cannot increment/decrement '${argument.text.trim()}' - not an lvalue`,
+                );
             }
             return;
         }
@@ -4299,10 +5097,10 @@ class SC8P053Compiler {
                 // 后递增：先返回原值，再递增
                 this.emitLdSymToA(sym);
                 const t = this.allocTemp();
-                this.emitLdAToTemp(t);        // 保存原值
+                this.emitLdAToTemp(t); // 保存原值
                 this.asmLines.push('ADDIA 0x01');
-                this.emitLdAToSym(sym);       // 存回递增后的值
-                this.emitLdTempToA(t);        // 返回原值
+                this.emitLdAToSym(sym); // 存回递增后的值
+                this.emitLdTempToA(t); // 返回原值
             }
         } else if (operator.text === '--') {
             if (isPrefix) {
@@ -4314,10 +5112,10 @@ class SC8P053Compiler {
                 // 后递减：先返回原值，再递减
                 this.emitLdSymToA(sym);
                 const t = this.allocTemp();
-                this.emitLdAToTemp(t);        // 保存原值
+                this.emitLdAToTemp(t); // 保存原值
                 this.asmLines.push('HSUBIA 0x01');
-                this.emitLdAToSym(sym);       // 存回递减后的值
-                this.emitLdTempToA(t);        // 返回原值
+                this.emitLdAToSym(sym); // 存回递减后的值
+                this.emitLdTempToA(t); // 返回原值
             }
         }
     }
@@ -4384,7 +5182,10 @@ class SC8P053Compiler {
             if (innerLeft.type === 'subscript_expression') {
                 this.emitArrayCompoundAssign(innerLeft, right, fn, op);
                 this.emitArrayLoad(innerLeft, fn);
-            } else if (innerLeft.type === 'pointer_expression' || innerLeft.type === 'unary_expression') {
+            } else if (
+                innerLeft.type === 'pointer_expression' ||
+                innerLeft.type === 'unary_expression'
+            ) {
                 this.emitAssignment(node, fn);
                 this.emitLoadAccumulator(innerLeft, fn);
             } else {
@@ -4409,14 +5210,18 @@ class SC8P053Compiler {
 
         if (inner.type === 'number_literal') {
             const val = this.parseNumber(inner.text);
-            this.asmLines.push(`LDIA 0x${(val & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+            this.asmLines.push(
+                `LDIA 0x${(val & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+            );
             return;
         }
 
         if (inner.type === 'char_literal') {
             const text = inner.text;
             const val = text.length >= 3 ? text.charCodeAt(1) : 0;
-            this.asmLines.push(`LDIA 0x${(val & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+            this.asmLines.push(
+                `LDIA 0x${(val & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+            );
             return;
         }
 
@@ -4424,7 +5229,9 @@ class SC8P053Compiler {
             const sym = this.resolveSymbol(inner, fn);
             if (sym) {
                 if (sym.typeInfo.isArray) {
-                    this.asmLines.push(`LDIA 0x${(sym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                    this.asmLines.push(
+                        `LDIA 0x${(sym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                    );
                 } else {
                     this.emitLdSymToA(sym);
                 }
@@ -4469,7 +5276,9 @@ class SC8P053Compiler {
                 sizeofArg = this.unwrapParentheses(sizeofArg);
                 const sym = this.resolveSymbol(sizeofArg, fn);
                 if (sym && sym.typeInfo.isArray) {
-                    this.asmLines.push(`LDIA 0x${sym.typeInfo.arraySize.toString(16).toUpperCase().padStart(2, '0')}`);
+                    this.asmLines.push(
+                        `LDIA 0x${sym.typeInfo.arraySize.toString(16).toUpperCase().padStart(2, '0')}`,
+                    );
                     return;
                 }
             }
@@ -4511,7 +5320,7 @@ class SC8P053Compiler {
             const addr = this.extractAddr(inner);
             if (addr !== null) {
                 // 常量地址解引用：*(u8 *)0xXX，读取该地址的内容
-                const equAddr = addr & 0x7F;
+                const equAddr = addr & 0x7f;
                 this.ensureBank(addr);
                 this.asmLines.push(`LD A,0x${equAddr.toString(16).toUpperCase().padStart(2, '0')}`);
                 return;
@@ -4523,32 +5332,45 @@ class SC8P053Compiler {
                     if (argNode.type === 'identifier') {
                         const sym = this.resolveSymbol(argNode, fn);
                         if (sym) {
-                            this.asmLines.push(`LDIA 0x${(sym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                            this.asmLines.push(
+                                `LDIA 0x${(sym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                            );
                         } else {
-                            throw new Error(`Cannot take address of '${argNode.text.trim()}' - not a variable`);
+                            throw new Error(
+                                `Cannot take address of '${argNode.text.trim()}' - not a variable`,
+                            );
                         }
                         return;
                     } else if (argNode.type === 'subscript_expression') {
                         const arraySym = this.resolveArraySymbol(argNode, fn);
-                        if (!arraySym) throw new Error(`Cannot take address of '${argNode.text.trim()}' - not an array element`);
+                        if (!arraySym)
+                            throw new Error(
+                                `Cannot take address of '${argNode.text.trim()}' - not an array element`,
+                            );
 
                         const indexNode = argNode.childForFieldName('index');
                         if (!indexNode) return;
 
                         const constIndex = this.getConstantValue(indexNode);
                         if (constIndex !== null) {
-                            const addr = (arraySym.ramAddr + constIndex) & 0xFF;
-                            this.asmLines.push(`LDIA 0x${addr.toString(16).toUpperCase().padStart(2, '0')}`);
+                            const addr = (arraySym.ramAddr + constIndex) & 0xff;
+                            this.asmLines.push(
+                                `LDIA 0x${addr.toString(16).toUpperCase().padStart(2, '0')}`,
+                            );
                         } else {
                             this.emitLoadAccumulator(indexNode, fn);
                             const t = this.allocTemp();
                             this.emitLdAToTemp(t);
-                            this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                            this.asmLines.push(
+                                `LDIA 0x${(arraySym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                            );
                             this.emitOpTemp('ADDA', t);
                         }
                         return;
                     }
-                    throw new Error(`Cannot take address of '${argNode.text.trim()}' - not an lvalue`);
+                    throw new Error(
+                        `Cannot take address of '${argNode.text.trim()}' - not an lvalue`,
+                    );
                 }
                 if (opNode.text === '*') {
                     if (argNode.type === 'update_expression') {
@@ -4563,7 +5385,8 @@ class SC8P053Compiler {
                             }
 
                             if (updateOp.text === '++') {
-                                const isPrefix = updateOp.startPosition.column < updateArg.startPosition.column;
+                                const isPrefix =
+                                    updateOp.startPosition.column < updateArg.startPosition.column;
                                 if (isPrefix) {
                                     this.emitLdSymToA(ptrSym);
                                     this.asmLines.push('ADDIA 0x01');
@@ -4581,7 +5404,8 @@ class SC8P053Compiler {
                                 }
                                 return;
                             } else if (updateOp.text === '--') {
-                                const isPrefix = updateOp.startPosition.column < updateArg.startPosition.column;
+                                const isPrefix =
+                                    updateOp.startPosition.column < updateArg.startPosition.column;
                                 if (isPrefix) {
                                     this.emitLdSymToA(ptrSym);
                                     this.asmLines.push('HSUBIA 0x01');
@@ -4606,11 +5430,13 @@ class SC8P053Compiler {
 
                     // 检查是否是常量地址（如 (u8 *)0x06）
                     const addr = this.extractAddr(argNode);
-                    if (addr !== null && addr >= 0x00 && addr <= 0x1F) {
+                    if (addr !== null && addr >= 0x00 && addr <= 0x1f) {
                         // SFR地址：使用直接寻址
-                        const equAddr = addr & 0x7F;
+                        const equAddr = addr & 0x7f;
                         this.ensureBank(addr);
-                        this.asmLines.push(`LD A,0x${equAddr.toString(16).toUpperCase().padStart(2, '0')}`);
+                        this.asmLines.push(
+                            `LD A,0x${equAddr.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
                     } else {
                         this.emitIndirectRead();
                     }
@@ -4623,7 +5449,7 @@ class SC8P053Compiler {
         if (inner.type === 'cast_expression') {
             const valueNode = inner.childForFieldName('value');
             if (valueNode && valueNode.type === 'number_literal') {
-                const addr = this.parseNumber(valueNode.text) & 0xFF;
+                const addr = this.parseNumber(valueNode.text) & 0xff;
                 this.asmLines.push(`LDIA 0x${addr.toString(16).toUpperCase().padStart(2, '0')}`);
                 return;
             }
@@ -4643,7 +5469,9 @@ class SC8P053Compiler {
             case '+':
                 this.emitLoadAccumulator(left, fn);
                 if (rightConst !== null) {
-                    this.asmLines.push(`ADDIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`);
+                    this.asmLines.push(
+                        `ADDIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`,
+                    );
                 } else {
                     const rsym = this.resolveSymbol(right, fn);
                     if (rsym) {
@@ -4659,7 +5487,9 @@ class SC8P053Compiler {
             case '-':
                 if (rightConst !== null) {
                     this.emitLoadAccumulator(left, fn);
-                    this.asmLines.push(`HSUBIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`);
+                    this.asmLines.push(
+                        `HSUBIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`,
+                    );
                 } else {
                     const lsym = this.resolveSymbol(left, fn);
                     const rsym = this.resolveSymbol(right, fn);
@@ -4687,7 +5517,9 @@ class SC8P053Compiler {
             case '&':
                 this.emitLoadAccumulator(left, fn);
                 if (rightConst !== null) {
-                    this.asmLines.push(`ANDIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`);
+                    this.asmLines.push(
+                        `ANDIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`,
+                    );
                 } else {
                     const rsym = this.resolveSymbol(right, fn);
                     if (rsym) {
@@ -4703,7 +5535,9 @@ class SC8P053Compiler {
             case '|':
                 this.emitLoadAccumulator(left, fn);
                 if (rightConst !== null) {
-                    this.asmLines.push(`ORIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`);
+                    this.asmLines.push(
+                        `ORIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`,
+                    );
                 } else {
                     const rsym = this.resolveSymbol(right, fn);
                     if (rsym) {
@@ -4719,7 +5553,9 @@ class SC8P053Compiler {
             case '^':
                 this.emitLoadAccumulator(left, fn);
                 if (rightConst !== null) {
-                    this.asmLines.push(`XORIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`);
+                    this.asmLines.push(
+                        `XORIA 0x${rightConst.toString(16).toUpperCase().padStart(2, '0')}`,
+                    );
                 } else {
                     const rsym = this.resolveSymbol(right, fn);
                     if (rsym) {
@@ -4732,20 +5568,26 @@ class SC8P053Compiler {
                     }
                 }
                 break;
-            case '*': this.emitMultiply(left, right, fn); break;
+            case '*':
+                this.emitMultiply(left, right, fn);
+                break;
             case '/': {
-                const isSigned = this.inferExprType(left, fn) === 'i8' || this.inferExprType(right, fn) === 'i8';
+                const isSigned =
+                    this.inferExprType(left, fn) === 'i8' || this.inferExprType(right, fn) === 'i8';
                 if (isSigned) this.emitSignedDivide(left, right, fn);
                 else this.emitDivide(left, right, fn);
                 break;
             }
             case '%': {
-                const isSigned = this.inferExprType(left, fn) === 'i8' || this.inferExprType(right, fn) === 'i8';
+                const isSigned =
+                    this.inferExprType(left, fn) === 'i8' || this.inferExprType(right, fn) === 'i8';
                 if (isSigned) this.emitSignedModulo(left, right, fn);
                 else this.emitModulo(left, right, fn);
                 break;
             }
-            case '<<': this.emitShiftLeft(left, right, fn); break;
+            case '<<':
+                this.emitShiftLeft(left, right, fn);
+                break;
             case '>>': {
                 const isSigned = this.inferExprType(left, fn) === 'i8';
                 this.emitShiftRight(left, right, fn, isSigned);
@@ -4755,7 +5597,12 @@ class SC8P053Compiler {
             case '||':
                 this.emitLogicalBinary(node, fn);
                 break;
-            case '==': case '!=': case '<': case '>': case '<=': case '>=':
+            case '==':
+            case '!=':
+            case '<':
+            case '>':
+            case '<=':
+            case '>=':
                 this.emitComparisonResult(node, fn);
                 break;
         }
@@ -4841,7 +5688,9 @@ class SC8P053Compiler {
         if (op === '&') {
             const sym = this.resolveSymbol(argument, fn);
             if (sym) {
-                this.asmLines.push(`LDIA 0x${(sym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                this.asmLines.push(
+                    `LDIA 0x${(sym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                );
             }
             return;
         }
@@ -4879,7 +5728,9 @@ class SC8P053Compiler {
         this.emitLoadAccumulator(indexNode, fn);
         this.emitLdAToTemp(t);
         if (arraySym.typeInfo.isArray) {
-            this.asmLines.push(`LDIA 0x${(arraySym.ramAddr & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+            this.asmLines.push(
+                `LDIA 0x${(arraySym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+            );
             this.emitOpTemp('ADDA', t);
         } else {
             this.emitLdSymToA(arraySym);
@@ -5266,7 +6117,12 @@ class SC8P053Compiler {
         }
     }
 
-    private emitShiftRight(left: Parser.SyntaxNode, right: Parser.SyntaxNode, fn: Fn, isSigned: boolean = false) {
+    private emitShiftRight(
+        left: Parser.SyntaxNode,
+        right: Parser.SyntaxNode,
+        fn: Fn,
+        isSigned = false,
+    ) {
         const rightConst = this.getConstantValue(right);
         if (rightConst !== null) {
             this.emitLoadAccumulator(left, fn);
@@ -5418,7 +6274,13 @@ class SC8P053Compiler {
         }
     }
 
-    private emitArithAssign(sym: Sym, left: Parser.SyntaxNode, right: Parser.SyntaxNode, fn: Fn, op: string) {
+    private emitArithAssign(
+        sym: Sym,
+        left: Parser.SyntaxNode,
+        right: Parser.SyntaxNode,
+        fn: Fn,
+        op: string,
+    ) {
         const isSigned = sym.typeInfo.type === 'i8';
         if (op === '*=') {
             this.emitMultiply(left, right, fn);
@@ -5446,7 +6308,7 @@ class SC8P053Compiler {
         if (!castNode) return null;
         const valueNode = castNode.childForFieldName('value');
         if (!valueNode || valueNode.type !== 'number_literal') return null;
-        return this.parseNumber(valueNode.text) & 0xFF;
+        return this.parseNumber(valueNode.text) & 0xff;
     }
 
     private resolveSymbol(node: Parser.SyntaxNode, fn: Fn): Sym | null {
@@ -5471,7 +6333,10 @@ class SC8P053Compiler {
         if (!arrayNode) {
             for (let i = 0; i < node.childCount; i++) {
                 const c = node.child(i);
-                if (c && c.type === 'identifier') { arrayNode = c; break; }
+                if (c && c.type === 'identifier') {
+                    arrayNode = c;
+                    break;
+                }
             }
         }
         if (!arrayNode) return null;
@@ -5515,8 +6380,8 @@ class SC8P053Compiler {
             if (!opNode || !argument) return null;
             const val = this.getConstantValue(argument);
             if (val === null) return null;
-            if (opNode.text === '-') return (-val) & 0xFF;
-            if (opNode.text === '~') return (~val) & 0xFF;
+            if (opNode.text === '-') return -val & 0xff;
+            if (opNode.text === '~') return ~val & 0xff;
             if (opNode.text === '!') return val === 0 ? 1 : 0;
             return null;
         }
@@ -5530,25 +6395,44 @@ class SC8P053Compiler {
             if (lv === null || rv === null) return null;
             const op = opNode.text;
             switch (op) {
-                case '+': return (lv + rv) & 0xFF;
-                case '-': return (lv - rv) & 0xFF;
-                case '*': return (lv * rv) & 0xFF;
-                case '/': return rv !== 0 ? Math.floor(lv / rv) & 0xFF : null;
-                case '%': return rv !== 0 ? (lv % rv) & 0xFF : null;
-                case '&': return (lv & rv) & 0xFF;
-                case '|': return (lv | rv) & 0xFF;
-                case '^': return (lv ^ rv) & 0xFF;
-                case '<<': return (lv << rv) & 0xFF;
-                case '>>': return (lv >> rv) & 0xFF;
-                case '==': return lv === rv ? 1 : 0;
-                case '!=': return lv !== rv ? 1 : 0;
-                case '<': return lv < rv ? 1 : 0;
-                case '>': return lv > rv ? 1 : 0;
-                case '<=': return lv <= rv ? 1 : 0;
-                case '>=': return lv >= rv ? 1 : 0;
-                case '&&': return (lv && rv) ? 1 : 0;
-                case '||': return (lv || rv) ? 1 : 0;
-                default: return null;
+                case '+':
+                    return (lv + rv) & 0xff;
+                case '-':
+                    return (lv - rv) & 0xff;
+                case '*':
+                    return (lv * rv) & 0xff;
+                case '/':
+                    return rv !== 0 ? Math.floor(lv / rv) & 0xff : null;
+                case '%':
+                    return rv !== 0 ? (lv % rv) & 0xff : null;
+                case '&':
+                    return lv & rv & 0xff;
+                case '|':
+                    return (lv | rv) & 0xff;
+                case '^':
+                    return (lv ^ rv) & 0xff;
+                case '<<':
+                    return (lv << rv) & 0xff;
+                case '>>':
+                    return (lv >> rv) & 0xff;
+                case '==':
+                    return lv === rv ? 1 : 0;
+                case '!=':
+                    return lv !== rv ? 1 : 0;
+                case '<':
+                    return lv < rv ? 1 : 0;
+                case '>':
+                    return lv > rv ? 1 : 0;
+                case '<=':
+                    return lv <= rv ? 1 : 0;
+                case '>=':
+                    return lv >= rv ? 1 : 0;
+                case '&&':
+                    return lv && rv ? 1 : 0;
+                case '||':
+                    return lv || rv ? 1 : 0;
+                default:
+                    return null;
             }
         }
         return null;
@@ -5560,7 +6444,7 @@ class SC8P053Compiler {
         if (text.startsWith('0x') || text.startsWith('0X')) val = parseInt(text, 16);
         else if (text.startsWith('0b') || text.startsWith('0B')) val = parseInt(text.slice(2), 2);
         else val = parseInt(text, 10);
-        return val & 0xFF;
+        return val & 0xff;
     }
 
     private unwrapParentheses(node: Parser.SyntaxNode): Parser.SyntaxNode {
@@ -5580,6 +6464,8 @@ class SC8P053Compiler {
     }
 }
 
-export async function compile(source: string): Promise<{ rom: Uint16Array; asm: string; debugInfo: DebugInfo }> {
+export async function compile(
+    source: string,
+): Promise<{ rom: Uint16Array; asm: string; debugInfo: DebugInfo }> {
     return new SC8P053Compiler().compile(source);
 }

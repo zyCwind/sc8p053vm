@@ -12,6 +12,7 @@ Complete documentation map for SC8P053VM project.
 ### 📋 Development Workflow
 - **[docs/WORKFLOW.md](./WORKFLOW.md)** - Complete development workflow (TDD process)
 - **[docs/COMPONENTS.md](./COMPONENTS.md)** - Reusable components and APIs directory
+- **[docs/LINT_GUIDE.md](./LINT_GUIDE.md)** - Code quality tools (ESLint + Prettier)
 - **[CONTRIBUTING.md](../CONTRIBUTING.md)** - Contribution guidelines
 
 ### 🏗️ Code Structure
@@ -41,11 +42,12 @@ Complete documentation map for SC8P053VM project.
 - Use LSP for inline error checking (recommended)
 
 ### For Feature Development
-1. Use `brainstorming` skill to explore requirements
-2. Write design spec in `docs/superpowers/specs/`
-3. Create implementation plan in `docs/superpowers/plans/`
-4. Follow **[WORKFLOW.md](./WORKFLOW.md)** TDD process
-5. Check **[COMPONENTS.md](./COMPONENTS.md)** for existing utilities
+1. Determine documentation level (see **[AGENTS.md](../AGENTS.md)** "Documentation Requirements by Task Type")
+2. Use `brainstorming` skill to explore requirements
+3. Write design spec in `docs/superpowers/specs/` (Level 1 & 2 only)
+4. Create implementation plan in `docs/superpowers/plans/` (Level 1 & 2 only)
+5. Follow **[WORKFLOW.md](./WORKFLOW.md)** TDD process
+6. Check **[COMPONENTS.md](./COMPONENTS.md)** for existing utilities
 
 ### For Bug Fixes
 1. Use `systematic-debugging` skill

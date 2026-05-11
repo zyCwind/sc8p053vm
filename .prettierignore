@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+example/dist/
+
+# Generated files
+*.d.ts
+*.map
+
+# Configuration files (keep original formatting)
+package.json
+package-lock.json
+.eslintrc.js
+.prettierrc.js
+
+# Documentation
+docs/
+
+# Test files
+src/cc-test.js
+
+# Styles (use CSS-specific formatter if needed)
+*.css
+
+# Version control
+.git/

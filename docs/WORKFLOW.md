@@ -5,9 +5,46 @@ Complete guide to the SC8P053VM development process, following Test-Driven Devel
 ## Core Principles
 
 ### 1. Document-Driven Development
-**All non-trivial changes must be documented before implementation.**
+**Documentation requirements vary by task type.**
 
-Workflow:
+Not all tasks need full spec + plan. Use the appropriate level:
+
+#### Documentation Levels
+
+**Level 1: Major Architecture Changes** (e.g., new subsystem, tech migration)
+- Required: ADR + Spec + Plan
+- Example: Adding document-driven development infrastructure
+
+**Level 2: Feature Development** (e.g., new VM instruction, compiler feature)
+- Required: Spec + Plan
+- Example: Adding comprehensive error detection
+
+**Level 3: Tool Configuration / Infrastructure** (e.g., add linting, update deps)
+- Required: Update existing docs
+- Optional: ADR (if significant decision)
+- NOT Required: Spec, Plan
+- Example: Adding ESLint + Prettier
+
+**Level 4: Simple Bug Fixes / Small Changes** (e.g., fix typo, adjust styling)
+- Required: No new docs needed
+- Example: Fixing register display bug
+
+**Decision Flowchart**:
+```
+Major architecture change?
+├─ YES → Level 1 (ADR + Spec + Plan)
+└─ NO
+   ├─ New feature or significant functionality?
+   │  ├─ YES → Level 2 (Spec + Plan)
+   │  └─ NO
+   │     ├─ Tool configuration or infrastructure?
+   │     │  ├─ YES → Level 3 (Update docs, ADR optional)
+   │     │  └─ NO → Level 4 (No new docs needed)
+```
+
+**Key Principle**: Documentation should add value, not create bureaucracy.
+
+Workflow for Level 1 & 2:
 ```
 Idea → Brainstorming → Spec → Plan → Implementation → Verification
 ```
