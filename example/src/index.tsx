@@ -22,6 +22,7 @@ class App extends React.Component<
         code: string;
         currentLine?: number;
         debugInfo: DebugInfo | null;
+        error: string | null;
         isBreakpointsEnabled: boolean;
         isRunning: boolean;
         ports: {
@@ -69,6 +70,7 @@ class App extends React.Component<
             code: '',
             currentLine: undefined,
             debugInfo: null,
+            error: null,
             isBreakpointsEnabled: true,
             isRunning: false,
             ports: { A: 0, B: 0 },
@@ -77,17 +79,25 @@ class App extends React.Component<
     }
 
     private async compileCode() {
-        const { debugInfo, rom } = await compile(this.state.code);
-        const vm = new VM(rom);
-        vm.ioCallback = (ports) => {
-            this.setState({ ports });
-        };
-        const { start } = debugInfo.fnRanges.get('main')?.[0] || {};
-        this.setState({
-            currentLine: start !== undefined ? debugInfo.lineNoMap.get(start) : undefined,
-            debugInfo,
-            vm,
-        });
+        try {
+            const { debugInfo, rom } = await compile(this.state.code);
+            const vm = new VM(rom);
+            vm.ioCallback = (ports) => {
+                this.setState({ ports });
+            };
+            const { start } = debugInfo.fnRanges.get('main')?.[0] || {};
+            this.setState({
+                currentLine: start !== undefined ? debugInfo.lineNoMap.get(start) : undefined,
+                debugInfo,
+                error: null,
+                vm,
+            });
+        } catch (e) {
+            this.setState({
+                error: e instanceof Error ? e.message : 'Unknown compilation error',
+            });
+            throw e;
+        }
     }
 
     private async run() {
@@ -212,11 +222,11 @@ class App extends React.Component<
         prevProps: Readonly<{}>,
         prevState: Readonly<{
             breakpoints: Set<number>;
-            isBreakpointsEnabled: boolean;
             code: string;
             currentLine?: number;
-            cycles: number;
             debugInfo: DebugInfo | null;
+            error: string | null;
+            isBreakpointsEnabled: boolean;
             isRunning: boolean;
             ports: { A: number; B: number };
             vm: VM | null;
@@ -682,6 +692,12 @@ class App extends React.Component<
                 </div>
 
                 <div className="debug-bar footer" id="status-bar">
+                    {this.state.error && (
+                        <div style={{ flex: 1, color: '#ecf0f1', fontSize: '13px' }}>
+                            <span style={{ color: '#e74c3c', marginRight: '8px' }}>Error:</span>
+                            <span>{this.state.error}</span>
+                        </div>
+                    )}
                     <div style={{ marginLeft: 'auto', color: '#ecf0f1', fontSize: '13px' }}>
                         <span style={{ marginRight: '8px' }}>CPU:</span>
                         <span id="cpu-cycles" style={{ color: '#ecf0f1' }}>{`${cycles}`}</span>
