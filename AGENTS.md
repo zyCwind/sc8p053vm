@@ -180,9 +180,11 @@ Is this a major architecture change?
 
 ```
 src/
-├── vm.ts          - VM core (instruction execution, hardware simulation)
-├── cc.ts          - C compiler (C → SC8P053 machine code)
-├── asmc.ts        - Assembler (assembly code processing)
+├── vm.ts          - VM core (~2074 lines, instruction execution, hardware simulation)
+├── cc.ts          - C compiler (~6890 lines, C → SC8P053 machine code)
+├── asmc.ts        - Assembler (~564 lines, assembly code processing)
+├── cc-test.js     - Comprehensive test suite (740 test cases)
+├── cc-test.md     - Bug tracking and test documentation
 └── index.ts       - Module exports
 
 example/
@@ -192,6 +194,39 @@ example/
 
 **See docs/CODE_STRUCTURE.md for complete module documentation.**
 
+## Compiler Feature Summary
+
+The C compiler (`src/cc.ts`) supports a substantial subset of C:
+
+### ✅ Supported Features
+- **Types**: `unsigned char`, `signed char`, `char`, `bool`, `void` (all 8-bit, no 16/32-bit types)
+- **Typedef**: Global/local typedef with pointers, arrays, chaining, function params
+- **Arrays**: 1D, 2D, 3D arrays with initialization, variable indices, compound assignment
+- **Pointers**: Declaration, dereference, address-of, pointer arithmetic, pointer params
+- **Functions**: Definition, calls, return values (including pointer returns), ISR (`__interrupt`)
+- **Control flow**: `if`/`else`, `while`, `do-while`, `for`, `switch`/`case`, `break`, `continue`
+- **goto/label**: Forward/backward jumps, jumps out of loops/switch
+- **Operators**: Arithmetic, bitwise, comparison, logical, shift, compound assignment, ternary
+- **Preprocessor**: `#define`, `#include`, `#if`/`#elif`/`#else`/`#endif`, `#ifdef`/`#ifndef`, `#error`
+- **Variables**: Local, global, static local, `sizeof`
+- **Increment/decrement**: Pre and post `++`/`--`
+
+### ❌ Not Supported
+- `struct`, `enum`, `union`
+- Floating point (`float`, `double`)
+- Dynamic memory (`malloc`/`free`)
+- Recursion (static RAM allocation)
+- Multi-file compilation
+- Standard library functions
+- Function pointers
+- Typedef cast syntax `(typedef_name)value` (use standard type names like `(unsigned char)value` instead)
+
+### Known Limitations
+- `(typedef_name)value` may be parsed as function call instead of cast (tree-sitter-c limitation). Use standard type names like `(unsigned char)value` as workaround
+- All integer types are 8-bit (`unsigned char`, `signed char`) due to SC8P053 MCU hardware constraints
+
+**See `src/cc-test.md` for detailed bug history and test coverage.**
+
 ## Documentation Navigation
 
 ### Entry Points
@@ -200,6 +235,7 @@ example/
 - **docs/ONBOARDING.md** - Getting started guide
 - **docs/WORKFLOW.md** - Development workflow (TDD process)
 - **docs/COMPONENTS.md** - Reusable components and APIs
+- **src/cc-test.md** - Compiler bug tracking and test documentation (105 bugs)
 
 ### Design & Planning
 
@@ -605,7 +641,15 @@ Use the `verification-before-completion` skill to ensure:
 
 **Current version**: 1.0.5
 **Completion level**: High (core VM, compiler, debugger implemented)
-**Focus area**: Documentation infrastructure, quality improvements, feature enhancements
+**Test coverage**: 740 test cases (cc-test.js) + 25 Jest tests (cc.test.ts)
+**Focus area**: Compiler feature completeness, quality improvements, edge case coverage
+
+### Recent Milestones
+- **#error preprocessor directive** - Full support with conditional block awareness
+- **typedef type aliases** - Global/local scoping, pointers, arrays, chaining, function params
+- **goto/label** - Forward/backward jumps, loop/switch exit, duplicate/undefined label checks
+- **Multi-dimensional arrays** - 2D/3D with initialization, variable indices, compound assignment
+- **Bug tracking** - 105 bugs identified and fixed, documented in `src/cc-test.md`
 
 ## Documentation Guidelines
 

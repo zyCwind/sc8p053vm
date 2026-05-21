@@ -35,6 +35,7 @@ interface TypeInfo {
     type: Type;
     isArray: boolean;
     arraySize: number;
+    dimensions?: number[];
     isPointer: boolean;
 }
 
@@ -86,18 +87,22 @@ interface Fn {
     frameSize: number;
     frameBase: number;
     returnIsPointer: boolean;
+    labels: Map<string, string>;
+    gotoTargets: Set<string>;
+    definedLabels: Set<string>;
+    localTypedefs: Map<string, TypeInfo>;
 }
 
-interface BasicBlock {
+interface  Block {
     id: number;
-    successors: BasicBlock[];
+    successors:  Block[];
     terminator: 'none' | 'return' | 'break' | 'continue' | 'branch' | 'infinite';
 }
 
 interface FnCFG {
-    entry: BasicBlock;
-    exit: BasicBlock;
-    blocks: BasicBlock[];
+    entry:  Block;
+    exit:  Block;
+    blocks:  Block[];
 }
 
 type TokenType =
@@ -140,57 +145,55 @@ interface CondFrame {
     branchTaken: boolean;
 }
 
+interface LineMap {
+    segments: Map<number, { srcLine: number; col: number; srcCol: number; len: number }[]>;
+}
+
 class Preprocessor {
     private macros: Map<string, Macro> = new Map();
     private condStack: CondFrame[] = [];
 
-    preprocess(source: string): string {
+    preprocess(source: string): { text: string; lineMap: LineMap } {
         this.macros.clear();
         this.condStack = [];
         const stripped = this.stripComments(source);
-        const { text: merged, lineMap, rawLineCount } = this.joinContinuationLines(stripped);
-        const mergedLines = merged.split('\n');
-        const outputLines: string[] = new Array(rawLineCount).fill('');
-        for (let i = 0; i < mergedLines.length; i++) {
-            const line = mergedLines[i];
-            const trimmed = trimStart(line);
-            const targetLine = lineMap[i];
-            if (trimmed.startsWith('#')) {
-                const result = this.processDirective(trimmed, i + 1);
-                if (result !== null) {
-                    outputLines[targetLine] = result;
+        const rawLines = stripped.split('\n');
+        const out: string[] = new Array(rawLines.length).fill('');
+        const segs: LineMap['segments'] = new Map();
+        let mi = 0;
+        for (let ri = 0; ri < rawLines.length; ) {
+            let line = rawLines[ri];
+            const startRi = ri;
+            const parts: { srcLine: number; col: number; srcCol: number; len: number }[] = [];
+            let mCol = 0;
+            if (line.endsWith('\\') && ri + 1 < rawLines.length) {
+                const head = line.slice(0, -1);
+                parts.push({ srcLine: startRi, col: 0, srcCol: 0, len: head.length });
+                mCol = head.length;
+                while (line.endsWith('\\') && ri + 1 < rawLines.length) {
+                    const next = rawLines[++ri];
+                    line = line.slice(0, -1) + next;
+                    parts.push({ srcLine: ri, col: mCol, srcCol: 0, len: next.length });
+                    mCol += next.length;
                 }
-            } else {
-                if (this.isActive()) {
-                    const expanded = this.expandLine(line, i + 1);
-                    outputLines[targetLine] = expanded;
-                }
+                segs.set(mi, parts);
             }
+            const trimmed = trimStart(line);
+            if (trimmed.startsWith('#')) {
+                const result = this.processDirective(trimmed, startRi + 1);
+                if (result !== null) {
+                    out[startRi] = result;
+                }
+            } else if (this.isActive()) {
+                out[startRi] = this.expandLine(line, startRi + 1);
+            }
+            mi++;
+            ri++;
         }
         if (this.condStack.length > 0) {
             throw new Error(`Unterminated #if directive at end of file`);
         }
-        return outputLines.join('\n');
-    }
-
-    private joinContinuationLines(source: string): {
-        text: string;
-        lineMap: number[];
-        rawLineCount: number;
-    } {
-        const rawLines = source.split('\n');
-        const result: string[] = [];
-        const lineMap: number[] = [];
-        for (let i = 0; i < rawLines.length; i++) {
-            let line = rawLines[i];
-            const startLine = i;
-            while (line.endsWith('\\') && i + 1 < rawLines.length) {
-                line = line.slice(0, -1) + rawLines[++i];
-            }
-            result.push(line);
-            lineMap.push(startLine);
-        }
-        return { text: result.join('\n'), lineMap, rawLineCount: rawLines.length };
+        return { text: out.join('\n'), lineMap: { segments: segs } };
     }
 
     private stripComments(source: string): string {
@@ -249,6 +252,13 @@ class Preprocessor {
         }
         if (text.startsWith('undef')) {
             if (this.isActive()) this.processUndef(trimStart(text.substring(5)));
+            return null;
+        }
+        if (text.startsWith('error')) {
+            if (this.isActive()) {
+                const msg = trimStart(text.substring(5)).trim();
+                throw new Error(`#error${msg ? ' ' + msg : ''}`);
+            }
             return null;
         }
         if (text.startsWith('ifdef')) {
@@ -361,26 +371,43 @@ class Preprocessor {
     }
 
     private processIfdef(text: string, negate: boolean): void {
+        const parentActive = this.isActive();
+        if (!parentActive) {
+            this.condStack.push({
+                active: false,
+                elseSeen: false,
+                parentActive: false,
+                branchTaken: false,
+            });
+            return;
+        }
         const name = text.trim().split(/\s/)[0];
         const defined = this.macros.has(name);
         const condition = negate ? !defined : defined;
         this.condStack.push({
             active: condition,
             elseSeen: false,
-            parentActive: this.isActive(),
+            parentActive: true,
             branchTaken: condition,
         });
     }
 
     private processIf(text: string, lineNo: number): void {
+        const parentActive = this.isActive();
+        if (!parentActive) {
+            this.condStack.push({
+                active: false,
+                elseSeen: false,
+                parentActive: false,
+                branchTaken: false,
+            });
+            return;
+        }
         const result = this.evaluateCondition(text, lineNo);
         this.condStack.push({
             active: result,
             elseSeen: false,
-            parentActive:
-                this.condStack.length === 0
-                    ? true
-                    : this.condStack[this.condStack.length - 1].active,
+            parentActive: true,
             branchTaken: result,
         });
     }
@@ -902,6 +929,7 @@ class Preprocessor {
 
 class SC8P053Compiler {
     private globalSymbols: Map<string, Sym> = new Map();
+    private globalTypedefs: Map<string, TypeInfo> = new Map();
     private globalInits: {
         asmName: string;
         value: number;
@@ -918,6 +946,26 @@ class SC8P053Compiler {
     private tempCounter = 0;
     private dryRun = false;
     private currentSourceLine = 0;
+    private lineMap: LineMap = { segments: new Map() };
+
+    private mapPos(row: number, col: number): { line: number; col: number } {
+        const segs = this.lineMap.segments.get(row);
+        if (!segs) {
+            return { line: row + 1, col: col + 1 };
+        }
+        for (let i = segs.length - 1; i >= 0; i--) {
+            const s = segs[i];
+            if (col >= s.col) {
+                return { line: s.srcLine + 1, col: s.srcCol + (col - s.col) + 1 };
+            }
+        }
+        return { line: row + 1, col: col + 1 };
+    }
+
+    private posStr(node: Parser.SyntaxNode): string {
+        const { line, col } = this.mapPos(node.startPosition.row, node.startPosition.column);
+        return `line ${line}, column ${col}`;
+    }
 
     private tempName(idx: number): string {
         if (!this.currentFn) return `_T${idx}`;
@@ -935,7 +983,8 @@ class SC8P053Compiler {
         source: string,
     ): Promise<{ rom: Uint16Array; asm: string; debugInfo: DebugInfo }> {
         const preprocessor = new Preprocessor();
-        const preprocessed = preprocessor.preprocess(source);
+        const { text: preprocessed, lineMap } = preprocessor.preprocess(source);
+        this.lineMap = lineMap;
         const c = await language;
         const parser = new Parser();
         parser.setLanguage(c);
@@ -943,6 +992,7 @@ class SC8P053Compiler {
 
         this.asmLines = [];
         this.globalSymbols.clear();
+        this.globalTypedefs.clear();
         this.globalInits = [];
         this.fns.clear();
         this.nextRamAddr = RAM_GP_START;
@@ -1061,9 +1111,7 @@ class SC8P053Compiler {
         switchDepth: number,
     ) {
         if (node.type === 'ERROR') {
-            const line = node.startPosition.row + 1;
-            const col = node.startPosition.column + 1;
-            throw new Error(`Syntax error at line ${line}, column ${col}`);
+            throw new Error(`Syntax error at ${this.posStr(node)}`);
         }
         if (node.isMissing) {
             throw new Error(`Syntax error: unexpected end of input`);
@@ -1081,13 +1129,13 @@ class SC8P053Compiler {
         if (node.type === 'break_statement') {
             if (loopDepth === 0 && switchDepth === 0) {
                 throw new Error(
-                    `'break' statement not within loop or switch in function '${funcName}'`,
+                    `'break' statement not within loop or switch at ${this.posStr(node)}`,
                 );
             }
         }
         if (node.type === 'continue_statement') {
             if (loopDepth === 0) {
-                throw new Error(`'continue' statement not within loop in function '${funcName}'`);
+                throw new Error(`'continue' statement not within loop at ${this.posStr(node)}`);
             }
         }
         if (node.type === 'call_expression') {
@@ -1135,9 +1183,7 @@ class SC8P053Compiler {
 
     private analyzeAll(rootNode: Parser.SyntaxNode) {
         if (rootNode.type === 'ERROR') {
-            const line = rootNode.startPosition.row + 1;
-            const col = rootNode.startPosition.column + 1;
-            throw new Error(`Syntax error at line ${line}, column ${col}`);
+            throw new Error(`Syntax error at ${this.posStr(rootNode)}`);
         }
         if (rootNode.isMissing) {
             throw new Error(`Syntax error: unexpected end of input`);
@@ -1146,9 +1192,7 @@ class SC8P053Compiler {
             const child = rootNode.child(i);
             if (!child) continue;
             if (child.type === 'ERROR') {
-                const line = child.startPosition.row + 1;
-                const col = child.startPosition.column + 1;
-                throw new Error(`Syntax error at line ${line}, column ${col}`);
+                throw new Error(`Syntax error at ${this.posStr(child)}`);
             }
             if (child.isMissing) {
                 throw new Error(`Syntax error: unexpected end of input`);
@@ -1158,19 +1202,16 @@ class SC8P053Compiler {
             } else if (child.type === 'function_definition') {
                 this.processFnSignature(child);
             } else if (child.type === 'type_definition') {
-                throw new Error(`'typedef' is not supported on this target`);
+                this.processTypedef(child);
             } else if (child.type === 'struct_specifier') {
-                throw new Error(`'struct' is not supported on this target`);
+                throw new Error(`'struct' is not supported at ${this.posStr(child)}`);
             } else if (child.type === 'enum_specifier') {
-                throw new Error(`'enum' is not supported on this target`);
+                throw new Error(`'enum' is not supported at ${this.posStr(child)}`);
             } else if (child.type === 'union_specifier') {
-                throw new Error(`'union' is not supported on this target`);
+                throw new Error(`'union' is not supported at ${this.posStr(child)}`);
             } else {
-                // 未识别的顶层节点 = 语义错误
-                const line = child.startPosition.row + 1;
-                const col = child.startPosition.column + 1;
                 throw new Error(
-                    `Unexpected top-level construct '${child.type}' at line ${line}, column ${col}. ` +
+                    `Unexpected top-level construct '${child.type}' at ${this.posStr(child)}. ` +
                         `A translation unit can only contain function definitions, declarations, and preprocessor directives.`,
                 );
             }
@@ -1198,20 +1239,20 @@ class SC8P053Compiler {
                 !fn.isISR
             ) {
                 throw new Error(
-                    `Non-void function '${funcName}' must return a value on all code paths`,
+                    `Non-void function '${funcName}' must return a value on all code paths at ${this.posStr(child)}`,
                 );
             }
         }
     }
 
-    private newBlock(blocks: BasicBlock[]): BasicBlock {
-        const block: BasicBlock = { id: blocks.length, successors: [], terminator: 'none' };
+    private newBlock(blocks:  Block[]):  Block {
+        const block:  Block = { id: blocks.length, successors: [], terminator: 'none' };
         blocks.push(block);
         return block;
     }
 
     private buildCFG(bodyNode: Parser.SyntaxNode): FnCFG {
-        const blocks: BasicBlock[] = [];
+        const blocks:  Block[] = [];
         const entry = this.newBlock(blocks);
         const exit = this.newBlock(blocks);
         const result = this.buildCFGCompound(bodyNode, entry, exit, blocks);
@@ -1223,18 +1264,18 @@ class SC8P053Compiler {
 
     private buildCFGCompound(
         node: Parser.SyntaxNode,
-        entry: BasicBlock,
-        exit: BasicBlock,
-        blocks: BasicBlock[],
-        loopHeader?: BasicBlock,
-    ): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+        entry:  Block,
+        exit:  Block,
+        blocks:  Block[],
+        loopHeader?:  Block,
+    ): { currentBlock:  Block | null; fallThrough: boolean } {
         const stmts: Parser.SyntaxNode[] = [];
         for (let i = 0; i < node.childCount; i++) {
             const child = node.child(i);
             if (!child || child.type === '{' || child.type === '}') continue;
             stmts.push(child);
         }
-        let currentBlock: BasicBlock | null = entry;
+        let currentBlock:  Block | null = entry;
         let fallThrough = true;
         for (const stmt of stmts) {
             if (!fallThrough || !currentBlock) break;
@@ -1247,11 +1288,11 @@ class SC8P053Compiler {
 
     private buildCFGStmt(
         stmt: Parser.SyntaxNode,
-        currentBlock: BasicBlock,
-        exit: BasicBlock,
-        blocks: BasicBlock[],
-        loopHeader?: BasicBlock,
-    ): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+        currentBlock:  Block,
+        exit:  Block,
+        blocks:  Block[],
+        loopHeader?:  Block,
+    ): { currentBlock:  Block | null; fallThrough: boolean } {
         if (stmt.type === 'return_statement') {
             currentBlock.terminator = 'return';
             return { currentBlock, fallThrough: false };
@@ -1295,16 +1336,33 @@ class SC8P053Compiler {
             return this.buildCFGSwitch(stmt, currentBlock, blocks);
         }
 
+        if (stmt.type === 'goto_statement') {
+            currentBlock.terminator = 'branch';
+            return { currentBlock, fallThrough: false };
+        }
+
+        if (stmt.type === 'labeled_statement') {
+            for (let i = 1; i < stmt.childCount; i++) {
+                const child = stmt.child(i);
+                if (child && child.type !== ':') {
+                    const result = this.buildCFGStmt(child, currentBlock, exit, blocks, loopHeader);
+                    currentBlock = result.currentBlock!;
+                    if (!result.fallThrough) return { currentBlock, fallThrough: false };
+                }
+            }
+            return { currentBlock, fallThrough: true };
+        }
+
         return { currentBlock, fallThrough: true };
     }
 
     private buildCFGIf(
         stmt: Parser.SyntaxNode,
-        currentBlock: BasicBlock,
-        exit: BasicBlock,
-        blocks: BasicBlock[],
-        loopHeader?: BasicBlock,
-    ): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+        currentBlock:  Block,
+        exit:  Block,
+        blocks:  Block[],
+        loopHeader?:  Block,
+    ): { currentBlock:  Block | null; fallThrough: boolean } {
         const consequence = stmt.childForFieldName('consequence');
         const alternative = stmt.childForFieldName('alternative');
 
@@ -1378,9 +1436,9 @@ class SC8P053Compiler {
 
     private buildCFGWhile(
         stmt: Parser.SyntaxNode,
-        currentBlock: BasicBlock,
-        blocks: BasicBlock[],
-    ): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+        currentBlock:  Block,
+        blocks:  Block[],
+    ): { currentBlock:  Block | null; fallThrough: boolean } {
         const body = stmt.childForFieldName('body');
         const condition = stmt.childForFieldName('condition');
 
@@ -1419,9 +1477,9 @@ class SC8P053Compiler {
 
     private buildCFGFor(
         stmt: Parser.SyntaxNode,
-        currentBlock: BasicBlock,
-        blocks: BasicBlock[],
-    ): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+        currentBlock:  Block,
+        blocks:  Block[],
+    ): { currentBlock:  Block | null; fallThrough: boolean } {
         const body = stmt.childForFieldName('body');
         const condition = stmt.childForFieldName('condition');
 
@@ -1460,9 +1518,9 @@ class SC8P053Compiler {
 
     private buildCFGDoWhile(
         stmt: Parser.SyntaxNode,
-        currentBlock: BasicBlock,
-        blocks: BasicBlock[],
-    ): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+        currentBlock:  Block,
+        blocks:  Block[],
+    ): { currentBlock:  Block | null; fallThrough: boolean } {
         const body = stmt.childForFieldName('body');
         const condition = stmt.childForFieldName('condition');
 
@@ -1499,10 +1557,10 @@ class SC8P053Compiler {
 
     private buildCFGSwitch(
         stmt: Parser.SyntaxNode,
-        currentBlock: BasicBlock,
-        blocks: BasicBlock[],
-        loopHeader?: BasicBlock,
-    ): { currentBlock: BasicBlock | null; fallThrough: boolean } {
+        currentBlock:  Block,
+        blocks:  Block[],
+        loopHeader?:  Block,
+    ): { currentBlock:  Block | null; fallThrough: boolean } {
         const body = stmt.childForFieldName('body');
         if (!body) return { currentBlock, fallThrough: true };
 
@@ -1514,7 +1572,7 @@ class SC8P053Compiler {
         }
 
         let hasDefault = false;
-        const caseBlocks: BasicBlock[] = [];
+        const caseBlocks:  Block[] = [];
         for (const caseNode of caseStatements) {
             const caseBlock = this.newBlock(blocks);
             caseBlocks.push(caseBlock);
@@ -1552,7 +1610,7 @@ class SC8P053Compiler {
                 }
                 continue;
             }
-            let cur: BasicBlock | null = caseBlock;
+            let cur:  Block | null = caseBlock;
             let ft = true;
             for (const s of caseStmts) {
                 if (!ft || !cur) break;
@@ -1568,7 +1626,7 @@ class SC8P053Compiler {
         return { currentBlock: switchExit, fallThrough: true };
     }
 
-    private cfgCanBreakToExit(block: BasicBlock, exit: BasicBlock, visited: Set<number>): boolean {
+    private cfgCanBreakToExit(block:  Block, exit:  Block, visited: Set<number>): boolean {
         if (visited.has(block.id)) return false;
         visited.add(block.id);
         for (const succ of block.successors) {
@@ -2074,18 +2132,20 @@ class SC8P053Compiler {
                 child &&
                 child.isNamed &&
                 child.type !== 'sized_type_specifier' &&
-                child.type !== 'primitive_type'
+                child.type !== 'primitive_type' &&
+                child.type !== 'type_identifier'
             ) {
                 declarators.push(child);
             }
         }
 
         for (const declaratorNode of declarators) {
-            const { name, isArray, arraySize, isPointer } = this.parseDeclarator(declaratorNode);
-            const size = isArray ? arraySize : 1;
+            const { name } = this.parseDeclarator(declaratorNode);
+            const ti = this.resolveTypeInfo(typeNode, declaratorNode);
+            const size = ti.isArray ? ti.arraySize : 1;
 
             if (this.globalSymbols.has(name)) {
-                throw new Error(`Global variable '${name}' is already defined`);
+                throw new Error(`Global variable '${name}' is already defined at ${this.posStr(declaratorNode)}`);
             }
 
             const addr = this.allocRam(size);
@@ -2094,12 +2154,7 @@ class SC8P053Compiler {
             this.globalSymbols.set(name, {
                 name,
                 asmName,
-                typeInfo: {
-                    type,
-                    isArray,
-                    arraySize,
-                    isPointer,
-                },
+                typeInfo: ti,
                 ramAddr: addr,
                 bank: this.getBankForAddr(addr),
                 isParam: false,
@@ -2114,22 +2169,29 @@ class SC8P053Compiler {
                 ? actualDeclarator.childForFieldName('value')
                 : null;
             if (valueNode) {
-                if (isArray && valueNode.type === 'initializer_list') {
+                if (ti.isArray && valueNode.type === 'initializer_list') {
                     const values: number[] = [];
-                    for (let i = 0; i < valueNode.childCount; i++) {
-                        const child = valueNode.child(i);
-                        if (
-                            !child ||
-                            child.type === ',' ||
-                            child.type === '{' ||
-                            child.type === '}'
-                        )
-                            continue;
-                        const constVal = this.getConstantValue(child);
-                        if (constVal !== null) {
-                            values.push(constVal & 0xff);
+                    const flattenGlobalInitList = (listNode: Parser.SyntaxNode) => {
+                        for (let i = 0; i < listNode.childCount; i++) {
+                            const child = listNode.child(i);
+                            if (
+                                !child ||
+                                child.type === ',' ||
+                                child.type === '{' ||
+                                child.type === '}'
+                            )
+                                continue;
+                            if (child.type === 'initializer_list') {
+                                flattenGlobalInitList(child);
+                            } else {
+                                const constVal = this.getConstantValue(child);
+                                if (constVal !== null) {
+                                    values.push(constVal & 0xff);
+                                }
+                            }
                         }
-                    }
+                    };
+                    flattenGlobalInitList(valueNode);
                     this.globalInits.push({
                         asmName,
                         value: 0,
@@ -2179,7 +2241,11 @@ class SC8P053Compiler {
         const nameNode = funcDeclarator.childForFieldName('declarator');
         const funcName = nameNode ? nameNode.text.trim() : '';
 
-        const returnIsPointer = this.isPointerDeclarator(declaratorNode);
+        const returnIsPointer = this.isPointerDeclarator(declaratorNode) ||
+            (typeNode.type === 'type_identifier' && (() => {
+                const td = this.lookupTypedef(typeNode.text.trim());
+                return td !== null && td.isPointer;
+            })());
 
         let isISR = false;
         for (let i = 0; i < funcDeclarator.childCount; i++) {
@@ -2209,6 +2275,10 @@ class SC8P053Compiler {
             frameSize: 0,
             frameBase: -1,
             returnIsPointer,
+            labels: new Map(),
+            gotoTargets: new Set(),
+            definedLabels: new Set(),
+            localTypedefs: new Map(),
         };
 
         let frameOffset = 0;
@@ -2222,6 +2292,7 @@ class SC8P053Compiler {
                     type: p.type,
                     isArray: false,
                     arraySize: 0,
+                    dimensions: [],
                     isPointer: p.isPointer,
                 },
                 ramAddr: -1,
@@ -2237,7 +2308,7 @@ class SC8P053Compiler {
 
         fn.frameSize = frameOffset;
         if (this.fns.has(funcName)) {
-            throw new Error(`Function '${funcName}' is already defined`);
+            throw new Error(`Function '${funcName}' is already defined at ${this.posStr(node)}`);
         }
         this.fns.set(funcName, fn);
     }
@@ -2269,7 +2340,8 @@ class SC8P053Compiler {
                     child.isNamed &&
                     child.type !== 'sized_type_specifier' &&
                     child.type !== 'primitive_type' &&
-                    child.type !== 'storage_class_specifier'
+                    child.type !== 'storage_class_specifier' &&
+                    child.type !== 'type_identifier'
                 ) {
                     declarators.push(child);
                 }
@@ -2277,9 +2349,9 @@ class SC8P053Compiler {
 
             let offset = frameOffset;
             for (const declaratorNode of declarators) {
-                const { name, isArray, arraySize, isPointer } =
-                    this.parseDeclarator(declaratorNode);
-                const size = isArray ? arraySize : 1;
+                const { name } = this.parseDeclarator(declaratorNode);
+                const ti = this.resolveTypeInfo(typeNode, declaratorNode);
+                const size = ti.isArray ? ti.arraySize : 1;
                 const asmName = toAsmName(fn.name + '_' + name);
 
                 if (fn.localSymbols.has(name)) {
@@ -2293,12 +2365,7 @@ class SC8P053Compiler {
                     fn.localSymbols.set(name, {
                         name,
                         asmName,
-                        typeInfo: {
-                            type,
-                            isArray,
-                            arraySize,
-                            isPointer,
-                        },
+                        typeInfo: ti,
                         ramAddr: addr,
                         bank: this.getBankForAddr(addr),
                         isParam: false,
@@ -2327,12 +2394,7 @@ class SC8P053Compiler {
                     fn.localSymbols.set(name, {
                         name,
                         asmName,
-                        typeInfo: {
-                            type,
-                            isArray,
-                            arraySize,
-                            isPointer,
-                        },
+                        typeInfo: ti,
                         ramAddr: -1,
                         bank: -1,
                         isParam: false,
@@ -2344,6 +2406,11 @@ class SC8P053Compiler {
                 }
             }
             return offset;
+        }
+
+        if (node.type === 'type_definition') {
+            this.processTypedef(node);
+            return frameOffset;
         }
 
         let offset = frameOffset;
@@ -2369,11 +2436,12 @@ class SC8P053Compiler {
             const pDeclarator = child.childForFieldName('declarator');
             if (!pType || !pDeclarator) continue;
             const { name: pName, isPointer: pIsPointer } = this.parseDeclarator(pDeclarator);
+            const td = pType.type === 'type_identifier' ? this.lookupTypedef(pType.text.trim()) : null;
             params.push({
                 name: pName,
                 asmName: toAsmName(funcName + '_' + pName),
                 type: this.resolveType(pType),
-                isPointer: pIsPointer,
+                isPointer: (td && td.isPointer) || pIsPointer,
             });
         }
         return params;
@@ -2386,7 +2454,6 @@ class SC8P053Compiler {
         if (text === 'char' || text === 'signed char') return 'i8';
         if (text === 'unsigned char') return 'u8';
 
-        // Reject 16-bit and larger types
         if (
             text === 'int' ||
             text === 'short' ||
@@ -2399,32 +2466,140 @@ class SC8P053Compiler {
             text === 'signed'
         ) {
             throw new Error(
-                `Type '${text}' is not supported (only 8-bit types: char, signed char, unsigned char)`,
+                `Type '${text}' is not supported at ${this.posStr(node)} (only 8-bit types: char, signed char, unsigned char)`,
             );
         }
 
         if (text.startsWith('float') || text.startsWith('double')) {
-            throw new Error(`Floating-point type '${text}' is not supported on this target`);
+            throw new Error(`Floating-point type '${text}' is not supported at ${this.posStr(node)}`);
         }
         if (text.startsWith('struct') || text.startsWith('union') || text.startsWith('enum')) {
-            throw new Error(`Type '${text.split(/\s/)[0]}' is not supported on this target`);
+            throw new Error(`Type '${text.split(/\s/)[0]}' is not supported at ${this.posStr(node)}`);
         }
         if (node.type === 'type_identifier') {
-            throw new Error(`Unknown type '${text}' (typedef is not supported on this target)`);
+            const td = this.lookupTypedef(text);
+            if (td) return td.type;
+            throw new Error(`Unknown type '${text}' at ${this.posStr(node)}`);
         }
-        throw new Error(`Type '${text}' is not supported on this target`);
+        throw new Error(`Type '${text}' is not supported at ${this.posStr(node)}`);
+    }
+
+    private lookupTypedef(name: string): TypeInfo | null {
+        if (this.currentFn) {
+            const local = this.currentFn.localTypedefs.get(name);
+            if (local) return local;
+        }
+        return this.globalTypedefs.get(name) || null;
+    }
+
+    private resolveTypeInfo(typeNode: Parser.SyntaxNode, declaratorNode: Parser.SyntaxNode): TypeInfo {
+        const text = typeNode.text.trim();
+        const td = this.lookupTypedef(text);
+        const baseType = this.resolveType(typeNode);
+        const { isArray, arraySize, dimensions, isPointer: declIsPointer } = this.parseDeclarator(declaratorNode);
+
+        if (td) {
+            const mergedIsPointer = td.isPointer || declIsPointer;
+            const mergedIsArray = td.isArray || isArray;
+            const mergedArraySize = td.isArray ? td.arraySize : arraySize;
+            const mergedDimensions = td.dimensions && td.dimensions.length > 0 ? td.dimensions : dimensions;
+            return {
+                type: baseType,
+                isArray: mergedIsArray,
+                arraySize: mergedArraySize,
+                dimensions: mergedDimensions,
+                isPointer: mergedIsPointer,
+            };
+        }
+
+        return {
+            type: baseType,
+            isArray,
+            arraySize,
+            dimensions,
+            isPointer: declIsPointer,
+        };
+    }
+
+    private processTypedef(node: Parser.SyntaxNode) {
+        const typeNode = node.childForFieldName('type');
+        const declaratorNode = node.childForFieldName('declarator');
+        if (!typeNode || !declaratorNode) return;
+
+        const baseType = this.resolveType(typeNode);
+
+        let isPointer = false;
+        let isArray = false;
+        let arraySize = 0;
+        let dimensions: number[] = [];
+        let name = '';
+
+        let decl: Parser.SyntaxNode | null = declaratorNode;
+        while (decl) {
+            if (decl.type === 'pointer_declarator') {
+                isPointer = true;
+                decl = decl.childForFieldName('declarator');
+                continue;
+            }
+            if (decl.type === 'array_declarator') {
+                isArray = true;
+                const sizeNode = decl.childForFieldName('size');
+                const sz = sizeNode ? this.getConstantValue(sizeNode) : null;
+                if (sz !== null) {
+                    dimensions.unshift(sz);
+                }
+                decl = decl.childForFieldName('declarator');
+                continue;
+            }
+            if (decl.type === 'type_identifier') {
+                name = decl.text.trim();
+                break;
+            }
+            if (decl.type === 'identifier') {
+                name = decl.text.trim();
+                break;
+            }
+            break;
+        }
+
+        if (!name) return;
+
+        if (isArray && dimensions.length > 0) {
+            arraySize = dimensions.reduce((a, b) => a * b, 1);
+        }
+
+        const ti: TypeInfo = {
+            type: baseType,
+            isArray,
+            arraySize,
+            dimensions: dimensions.length > 0 ? dimensions : undefined,
+            isPointer,
+        };
+
+        if (this.currentFn) {
+            if (this.currentFn.localTypedefs.has(name)) {
+                throw new Error(`Typedef '${name}' redefined at ${this.posStr(node)}`);
+            }
+            this.currentFn.localTypedefs.set(name, ti);
+        } else {
+            if (this.globalTypedefs.has(name)) {
+                throw new Error(`Typedef '${name}' redefined at ${this.posStr(node)}`);
+            }
+            this.globalTypedefs.set(name, ti);
+        }
     }
 
     private parseDeclarator(node: Parser.SyntaxNode): {
         name: string;
         isArray: boolean;
         arraySize: number;
+        dimensions: number[];
         isPointer: boolean;
     } {
         if (node.type === 'init_declarator') {
             const inner = node.childForFieldName('declarator');
             if (inner) return this.parseDeclarator(inner);
-            return { name: '', isArray: false, arraySize: 0, isPointer: false };
+            return { name: '', isArray: false, arraySize: 0, dimensions: [], isPointer: false };
         }
         if (node.type === 'pointer_declarator') {
             for (let i = 0; i < node.childCount; i++) {
@@ -2434,6 +2609,7 @@ class SC8P053Compiler {
                         name: child.text.trim(),
                         isArray: false,
                         arraySize: 0,
+                        dimensions: [],
                         isPointer: true,
                     };
                 }
@@ -2445,29 +2621,34 @@ class SC8P053Compiler {
                     return this.parseDeclarator(child);
                 }
             }
-            return { name: node.text.trim(), isArray: false, arraySize: 0, isPointer: true };
+            return { name: node.text.trim(), isArray: false, arraySize: 0, dimensions: [], isPointer: true };
         }
         const arrayDecl = this.findNodeByType(node, 'array_declarator');
         if (arrayDecl) {
-            const nameNode = arrayDecl.childForFieldName('declarator');
-            if (nameNode && nameNode.type === 'array_declarator') {
-                throw new Error(`Multi-dimensional arrays are not supported on this target`);
+            const dimensions: number[] = [];
+            let currentDecl: Parser.SyntaxNode | null = arrayDecl;
+            while (currentDecl && currentDecl.type === 'array_declarator') {
+                const sizeNode = currentDecl.childForFieldName('size');
+                let dimSize = 1;
+                if (sizeNode) {
+                    const constVal = this.getConstantValue(sizeNode);
+                    dimSize = constVal !== null ? constVal : parseInt(sizeNode.text, 10);
+                    if (isNaN(dimSize) || dimSize <= 0) dimSize = 1;
+                }
+                dimensions.unshift(dimSize);
+                currentDecl = currentDecl.childForFieldName('declarator');
             }
-            const sizeNode = arrayDecl.childForFieldName('size');
-            let size = 1;
-            if (sizeNode) {
-                const constVal = this.getConstantValue(sizeNode);
-                size = constVal !== null ? constVal : parseInt(sizeNode.text, 10);
-                if (isNaN(size) || size <= 0) size = 1;
-            }
+            const name = currentDecl ? currentDecl.text.trim() : '';
+            const totalSize = dimensions.reduce((a, b) => a * b, 1);
             return {
-                name: nameNode ? nameNode.text.trim() : '',
+                name,
                 isArray: true,
-                arraySize: size,
+                arraySize: totalSize,
+                dimensions,
                 isPointer: false,
             };
         }
-        return { name: node.text.trim(), isArray: false, arraySize: 0, isPointer: false };
+        return { name: node.text.trim(), isArray: false, arraySize: 0, dimensions: [], isPointer: false };
     }
 
     private isPointerDeclarator(declaratorNode: Parser.SyntaxNode): boolean {
@@ -2517,6 +2698,9 @@ class SC8P053Compiler {
         }
         for (const [, finfo] of this.fns) {
             finfo.frameBase = -1;
+            finfo.gotoTargets = new Set();
+            finfo.definedLabels = new Set();
+            finfo.localTypedefs = new Map();
         }
         this.nextRamAddr = afterGlobalsAddr;
         this.currentBank = afterGlobalsBank;
@@ -2537,6 +2721,14 @@ class SC8P053Compiler {
         for (let i = 0; i < node.childCount; i++) {
             const child = node.child(i);
             if (child && child.type === 'function_definition') this.emitFn(child);
+        }
+
+        for (const [fnName, fn] of this.fns) {
+            for (const target of fn.gotoTargets) {
+                if (!fn.definedLabels.has(target)) {
+                    throw new Error(`Undefined label '${target}' in function '${fnName}'`);
+                }
+            }
         }
 
         this.resolveTempAddresses();
@@ -2579,7 +2771,7 @@ class SC8P053Compiler {
         this.currentAsmBank = 0;
 
         if (!this.dryRun) {
-            this.currentSourceLine = node.startPosition.row + 1;
+            this.currentSourceLine = this.mapPos(node.startPosition.row, node.startPosition.column).line;
             this.asmLines.push(`;@LINE ${this.currentSourceLine}`);
             this.asmLines.push(`;@FN_START ${funcName}`);
         }
@@ -2639,7 +2831,7 @@ class SC8P053Compiler {
 
     private emitStatement(node: Parser.SyntaxNode, fn: Fn) {
         if (!this.dryRun) {
-            this.currentSourceLine = node.startPosition.row + 1;
+            this.currentSourceLine = this.mapPos(node.startPosition.row, node.startPosition.column).line;
             this.asmLines.push(`;@LINE ${this.currentSourceLine}`);
         }
         switch (node.type) {
@@ -2677,11 +2869,15 @@ class SC8P053Compiler {
                 this.emitSwitchStatement(node, fn);
                 break;
             case 'goto_statement':
-                throw new Error(`'goto' is not supported on this target`);
+                this.emitGotoStatement(node, fn);
+                break;
             case 'labeled_statement':
-                throw new Error(`Labels are not supported on this target`);
+                this.emitLabeledStatement(node, fn);
+                break;
+            case 'type_definition':
+                break;
             default:
-                throw new Error(`Unsupported statement type: '${node.type}'`);
+                throw new Error(`Unsupported statement type '${node.type}' at ${this.posStr(node)}`);
         }
     }
 
@@ -2856,7 +3052,9 @@ class SC8P053Compiler {
                         child.type === 'for_statement' ||
                         child.type === 'do_statement' ||
                         child.type === 'return_statement' ||
-                        child.type === 'switch_statement'
+                        child.type === 'switch_statement' ||
+                        child.type === 'goto_statement' ||
+                        child.type === 'labeled_statement'
                     ) {
                         this.emitStatement(child, fn);
                     }
@@ -2923,7 +3121,8 @@ class SC8P053Compiler {
             if (
                 child.type === 'sized_type_specifier' ||
                 child.type === 'primitive_type' ||
-                child.type === 'storage_class_specifier'
+                child.type === 'storage_class_specifier' ||
+                child.type === 'type_identifier'
             )
                 continue;
 
@@ -2937,7 +3136,10 @@ class SC8P053Compiler {
             let sym: Sym | null = null;
             if (declNode) {
                 if (declNode.type === 'array_declarator') {
-                    const idNode = declNode.childForFieldName('declarator');
+                    let idNode: Parser.SyntaxNode | null = declNode.childForFieldName('declarator');
+                    while (idNode && idNode.type === 'array_declarator') {
+                        idNode = idNode.childForFieldName('declarator');
+                    }
                     if (idNode) sym = this.resolveSymbol(idNode, fn);
                 } else if (declNode.type === 'pointer_declarator') {
                     for (let i = 0; i < declNode.childCount; i++) {
@@ -2961,16 +3163,27 @@ class SC8P053Compiler {
 
             if (valueNode) {
                 if (sym && sym.typeInfo.isArray && valueNode.type === 'initializer_list') {
+                    const flatValues: Parser.SyntaxNode[] = [];
+                    const flattenInitList = (listNode: Parser.SyntaxNode) => {
+                        for (let j = 0; j < listNode.childCount; j++) {
+                            const initChild = listNode.child(j);
+                            if (
+                                !initChild ||
+                                initChild.type === ',' ||
+                                initChild.type === '{' ||
+                                initChild.type === '}'
+                            )
+                                continue;
+                            if (initChild.type === 'initializer_list') {
+                                flattenInitList(initChild);
+                            } else {
+                                flatValues.push(initChild);
+                            }
+                        }
+                    };
+                    flattenInitList(valueNode);
                     let elemIdx = 0;
-                    for (let j = 0; j < valueNode.childCount; j++) {
-                        const initChild = valueNode.child(j);
-                        if (
-                            !initChild ||
-                            initChild.type === ',' ||
-                            initChild.type === '{' ||
-                            initChild.type === '}'
-                        )
-                            continue;
+                    for (const initChild of flatValues) {
                         const constVal = this.getConstantValue(initChild);
                         if (constVal !== null) {
                             this.asmLines.push(
@@ -3002,13 +3215,13 @@ class SC8P053Compiler {
             }
         }
         if (value && fn.returnType === 'void') {
-            throw new Error(`Function '${fn.name}' is void and should not return a value`);
+            throw new Error(`Function '${fn.name}' is void and should not return a value at ${this.posStr(node)}`);
         }
         if (value && fn.isISR) {
-            throw new Error(`ISR function '${fn.name}' should not return a value`);
+            throw new Error(`ISR function '${fn.name}' should not return a value at ${this.posStr(node)}`);
         }
         if (!value && fn.returnType !== 'void' && fn.name !== 'main' && !fn.isISR) {
-            throw new Error(`Non-void function '${fn.name}' must return a value`);
+            throw new Error(`Non-void function '${fn.name}' must return a value at ${this.posStr(node)}`);
         }
         if (value) this.emitLoadAccumulator(value, fn);
         if (fn.name === 'main') {
@@ -3035,6 +3248,47 @@ class SC8P053Compiler {
 
     private emitContinueStatement(fn: Fn) {
         if (fn.continueLabel) this.asmLines.push(`JP ${fn.continueLabel}`);
+    }
+
+    private resolveLabel(fn: Fn, labelName: string): string {
+        if (!fn.labels.has(labelName)) {
+            fn.labels.set(labelName, this.newLabel(fn));
+        }
+        return fn.labels.get(labelName)!;
+    }
+
+    private emitGotoStatement(node: Parser.SyntaxNode, fn: Fn) {
+        let labelName = '';
+        for (let i = 0; i < node.childCount; i++) {
+            const child = node.child(i);
+            if (child && (child.type === 'identifier' || child.type === 'statement_identifier')) {
+                labelName = child.text.trim();
+                break;
+            }
+        }
+        if (!labelName) return;
+        fn.gotoTargets.add(labelName);
+        const asmLabel = this.resolveLabel(fn, labelName);
+        this.asmLines.push(`JP ${asmLabel}`);
+    }
+
+    private emitLabeledStatement(node: Parser.SyntaxNode, fn: Fn) {
+        const labelNode = node.child(0);
+        if (labelNode) {
+            const labelName = labelNode.text.trim();
+            if (fn.definedLabels.has(labelName)) {
+                throw new Error(`Duplicate label '${labelName}' at ${this.posStr(labelNode)}`);
+            }
+            fn.definedLabels.add(labelName);
+            const asmLabel = this.resolveLabel(fn, labelName);
+            this.emitLabel(asmLabel);
+        }
+        for (let i = 1; i < node.childCount; i++) {
+            const child = node.child(i);
+            if (child && child.type !== ':') {
+                this.emitStatement(child, fn);
+            }
+        }
     }
 
     private emitCondition(
@@ -3381,7 +3635,10 @@ class SC8P053Compiler {
 
     private typeInfoToString(typeInfo: TypeInfo): string {
         let type = typeInfo.type;
-        if (typeInfo.isArray) type += `[${typeInfo.arraySize}]`;
+        if (typeInfo.isArray) {
+            const dims = typeInfo.dimensions || [typeInfo.arraySize];
+            type += dims.map(d => `[${d}]`).join('');
+        }
         else if (typeInfo.isPointer) type += ' *';
         return type;
     }
@@ -3425,10 +3682,9 @@ class SC8P053Compiler {
                     const argType = this.typeInfoOf(argNode, fn);
                     if (!argType.isPointer) {
                         throw new Error(
-                            `Cannot dereference non-pointer type '${this.typeInfoToString(argType)}'`,
+                            `Cannot dereference non-pointer type '${this.typeInfoToString(argType)}' at ${this.posStr(argNode)}`,
                         );
                     }
-                    // 解引用操作：返回指针指向的类型
                     return { type: argType.type, isArray: false, arraySize: 0, isPointer: false };
                 }
                 return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
@@ -3438,13 +3694,19 @@ class SC8P053Compiler {
 
         if (inner.type === 'subscript_expression') {
             let checkedArray = false;
-            const arrayNode = inner.childForFieldName('array');
+            let arrayNode = inner.childForFieldName('array');
+            if (!arrayNode) arrayNode = inner.childForFieldName('argument');
             if (arrayNode) {
                 const arrType = this.typeInfoOf(arrayNode, fn);
                 if (!arrType.isArray && !arrType.isPointer) {
                     throw new Error(
-                        `Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer`,
+                        `Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer at ${this.posStr(arrayNode)}`,
                     );
+                }
+                if (arrType.isArray && arrType.dimensions && arrType.dimensions.length > 1) {
+                    const remainingDims = arrType.dimensions.slice(1);
+                    const remainingSize = remainingDims.reduce((a, b) => a * b, 1);
+                    return { type: arrType.type, isArray: true, arraySize: remainingSize, dimensions: remainingDims, isPointer: false };
                 }
                 checkedArray = true;
             }
@@ -3455,8 +3717,13 @@ class SC8P053Compiler {
                         const arrType = this.typeInfoOf(c, fn);
                         if (!arrType.isArray && !arrType.isPointer) {
                             throw new Error(
-                                `Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer`,
+                                `Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer at ${this.posStr(c)}`,
                             );
+                        }
+                        if (arrType.isArray && arrType.dimensions && arrType.dimensions.length > 1) {
+                            const remainingDims = arrType.dimensions.slice(1);
+                            const remainingSize = remainingDims.reduce((a, b) => a * b, 1);
+                            return { type: arrType.type, isArray: true, arraySize: remainingSize, dimensions: remainingDims, isPointer: false };
                         }
                         break;
                     }
@@ -3478,14 +3745,13 @@ class SC8P053Compiler {
             if (['+', '-', '*', '/', '%'].includes(op)) {
                 if (leftType.isPointer || rightType.isPointer) {
                     if (op !== '+' && op !== '-') {
-                        throw new Error(`Cannot use '${op}' with pointer operand`);
+                        throw new Error(`Cannot use '${op}' with pointer operand at ${this.posStr(inner)}`);
                     }
                     if (leftType.isPointer && rightType.isPointer) {
-                        if (op === '+') throw new Error(`Cannot add two pointers`);
+                        if (op === '+') throw new Error(`Cannot add two pointers at ${this.posStr(inner)}`);
                         if (op === '-')
                             return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
                     }
-                    // 指针加减整数：结果仍是指针，保持基础类型
                     const ptrType = leftType.isPointer ? leftType : rightType;
                     return { type: ptrType.type, isArray: false, arraySize: 0, isPointer: true };
                 }
@@ -3493,7 +3759,7 @@ class SC8P053Compiler {
             }
             if (['&', '|', '^', '<<', '>>'].includes(op)) {
                 if (leftType.isPointer || rightType.isPointer) {
-                    throw new Error(`Cannot use '${op}' with pointer operand`);
+                    throw new Error(`Cannot use '${op}' with pointer operand at ${this.posStr(inner)}`);
                 }
                 return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
             }
@@ -3508,7 +3774,7 @@ class SC8P053Compiler {
                 const argType = this.typeInfoOf(argNode, fn);
                 if (op === '-' || op === '~') {
                     if (argType.isPointer) {
-                        throw new Error(`Cannot use '${op}' on pointer type`);
+                        throw new Error(`Cannot use '${op}' on pointer type at ${this.posStr(inner)}`);
                     }
                 }
                 if (op === '&') {
@@ -3518,10 +3784,9 @@ class SC8P053Compiler {
                 if (op === '*') {
                     if (!argType.isPointer) {
                         throw new Error(
-                            `Cannot dereference non-pointer type '${this.typeInfoToString(argType)}'`,
+                            `Cannot dereference non-pointer type '${this.typeInfoToString(argType)}' at ${this.posStr(inner)}`,
                         );
                     }
-                    // 解引用：返回指针指向的类型
                     return { type: argType.type, isArray: false, arraySize: 0, isPointer: false };
                 }
             }
@@ -3615,13 +3880,17 @@ class SC8P053Compiler {
 
         if (inner.type === 'subscript_expression') {
             let checkedArray = false;
-            const arrayNode = inner.childForFieldName('array');
+            let arrayNode = inner.childForFieldName('array');
+            if (!arrayNode) arrayNode = inner.childForFieldName('argument');
             if (arrayNode) {
                 const arrType = this.typeInfoOf(arrayNode, fn);
                 if (!arrType.isArray && !arrType.isPointer) {
                     throw new Error(
-                        `Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer`,
+                        `Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer at ${this.posStr(arrayNode)}`,
                     );
+                }
+                if (arrType.isArray && (arrType.dimensions || []).length > 1) {
+                    return { type: arrType.type, isArray: false, arraySize: 0, isPointer: true };
                 }
                 checkedArray = true;
             }
@@ -3632,8 +3901,11 @@ class SC8P053Compiler {
                         const arrType = this.typeInfoOf(c, fn);
                         if (!arrType.isArray && !arrType.isPointer) {
                             throw new Error(
-                                `Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer`,
+                                `Cannot subscript type '${this.typeInfoToString(arrType)}' - not an array or pointer at ${this.posStr(c)}`,
                             );
+                        }
+                        if (arrType.isArray && (arrType.dimensions || []).length > 1) {
+                            return { type: arrType.type, isArray: false, arraySize: 0, isPointer: true };
                         }
                         break;
                     }
@@ -3650,7 +3922,7 @@ class SC8P053Compiler {
                     const argType = this.typeInfoOf(argNode, fn);
                     if (!argType.isPointer) {
                         throw new Error(
-                            `Cannot dereference non-pointer type '${this.typeInfoToString(argType)}'`,
+                            `Cannot dereference non-pointer type '${this.typeInfoToString(argType)}' at ${this.posStr(argNode)}`,
                         );
                     }
                 }
@@ -3667,7 +3939,7 @@ class SC8P053Compiler {
                     const argType = this.typeInfoOf(argNode, fn);
                     if (!argType.isPointer) {
                         throw new Error(
-                            `Cannot dereference non-pointer type '${this.typeInfoToString(argType)}'`,
+                            `Cannot dereference non-pointer type '${this.typeInfoToString(argType)}' at ${this.posStr(argNode)}`,
                         );
                     }
                 }
@@ -3678,17 +3950,17 @@ class SC8P053Compiler {
         return { type: 'u8', isArray: false, arraySize: 0, isPointer: false };
     }
 
-    private checkAssignmentCompat(leftType: TypeInfo, rightType: TypeInfo, op: string) {
+    private checkAssignmentCompat(leftType: TypeInfo, rightType: TypeInfo, op: string, node: Parser.SyntaxNode) {
         if (leftType.isArray) {
-            throw new Error(`Cannot assign to array type '${this.typeInfoToString(leftType)}'`);
+            throw new Error(`Cannot assign to array type '${this.typeInfoToString(leftType)}' at ${this.posStr(node)}`);
         }
         if (op !== '=' && leftType.isPointer) {
             if (op !== '+=' && op !== '-=') {
-                throw new Error(`Cannot use '${op}' on pointer - only += and -= are allowed`);
+                throw new Error(`Cannot use '${op}' on pointer at ${this.posStr(node)} - only += and -= are allowed`);
             }
             if (rightType.isPointer || rightType.isArray) {
                 throw new Error(
-                    `Cannot ${op === '+=' ? 'add' : 'subtract'} pointer to/from pointer`,
+                    `Cannot ${op === '+=' ? 'add' : 'subtract'} pointer to/from pointer at ${this.posStr(node)}`,
                 );
             }
         }
@@ -3700,17 +3972,17 @@ class SC8P053Compiler {
                 rightType.type !== 'u8'
             ) {
                 throw new Error(
-                    `Cannot assign '${this.typeInfoToString(rightType)}' to pointer type '${this.typeInfoToString(leftType)}'`,
+                    `Cannot assign '${this.typeInfoToString(rightType)}' to pointer type '${this.typeInfoToString(leftType)}' at ${this.posStr(node)}`,
                 );
             }
             if (!leftType.isPointer && leftType.type !== 'void' && rightType.isPointer) {
                 throw new Error(
-                    `Cannot assign pointer to non-pointer type '${this.typeInfoToString(leftType)}'`,
+                    `Cannot assign pointer to non-pointer type '${this.typeInfoToString(leftType)}' at ${this.posStr(node)}`,
                 );
             }
             if (!leftType.isPointer && rightType.isArray) {
                 throw new Error(
-                    `Cannot assign array to non-pointer type '${this.typeInfoToString(leftType)}'`,
+                    `Cannot assign array to non-pointer type '${this.typeInfoToString(leftType)}' at ${this.posStr(node)}`,
                 );
             }
         }
@@ -3765,7 +4037,7 @@ class SC8P053Compiler {
                     if (declarator && value) {
                         const leftType = this.typeInfoOfLvalue(declarator, fn);
                         const rightType = this.typeInfoOf(value, fn);
-                        this.checkAssignmentCompat(leftType, rightType, '=');
+                        this.checkAssignmentCompat(leftType, rightType, '=', declarator);
                     }
                 }
             }
@@ -3830,13 +4102,13 @@ class SC8P053Compiler {
                     this.checkTypesInExpression(child, fn);
                     const retType = this.typeInfoOf(child, fn);
                     if (fn.returnType === 'void' && retType.type !== 'void') {
-                        throw new Error(`void function cannot return a value`);
+                        throw new Error(`void function cannot return a value at ${this.posStr(child)}`);
                     }
                     if (fn.returnType !== 'void' && !fn.returnIsPointer && retType.isPointer) {
-                        throw new Error(`Cannot return pointer from non-pointer function`);
+                        throw new Error(`Cannot return pointer from non-pointer function at ${this.posStr(child)}`);
                     }
                     if (fn.returnType !== 'void' && !fn.returnIsPointer && retType.isArray) {
-                        throw new Error(`Cannot return array from function`);
+                        throw new Error(`Cannot return array from function at ${this.posStr(child)}`);
                     }
                     if (
                         fn.returnIsPointer &&
@@ -3845,7 +4117,7 @@ class SC8P053Compiler {
                         retType.type !== 'u8'
                     ) {
                         throw new Error(
-                            `Cannot return '${this.typeInfoToString(retType)}' from pointer function`,
+                            `Cannot return '${this.typeInfoToString(retType)}' from pointer function at ${this.posStr(child)}`,
                         );
                     }
                 }
@@ -3870,7 +4142,7 @@ class SC8P053Compiler {
             if (left && right) {
                 const leftType = this.typeInfoOfLvalue(left, fn);
                 const rightType = this.typeInfoOf(right, fn);
-                this.checkAssignmentCompat(leftType, rightType, op);
+                this.checkAssignmentCompat(leftType, rightType, op, left);
                 this.checkTypesInExpression(left, fn);
                 this.checkTypesInExpression(right, fn);
             }
@@ -4023,7 +4295,7 @@ class SC8P053Compiler {
                 this.emitLoadAccumulator(right, fn);
                 const sym = this.resolveSymbol(left, fn);
                 if (sym) this.emitLdAToSym(sym);
-                else throw new Error(`Cannot assign to '${left.text.trim()}' - not an lvalue`);
+                else throw new Error(`Cannot assign to '${left.text.trim()}' at ${this.posStr(left)} - not an lvalue`);
             }
             return;
         }
@@ -4048,7 +4320,7 @@ class SC8P053Compiler {
         }
 
         const sym = this.resolveSymbol(left, fn);
-        if (!sym) throw new Error(`Cannot assign to '${left.text.trim()}' - not an lvalue`);
+        if (!sym) throw new Error(`Cannot assign to '${left.text.trim()}' at ${this.posStr(left)} - not an lvalue`);
 
         if (['+=', '-=', '&=', '|=', '^='].includes(op)) {
             this.emitLoadAccumulator(left, fn);
@@ -4146,23 +4418,21 @@ class SC8P053Compiler {
     }
 
     private emitArrayStore(arrayNode: Parser.SyntaxNode, valueNode: Parser.SyntaxNode, fn: Fn) {
-        const arraySym = this.resolveArraySymbol(arrayNode, fn);
-        let indexNode: Parser.SyntaxNode | null = arrayNode.childForFieldName('index');
-        if (!indexNode) {
-            for (let i = 0; i < arrayNode.childCount; i++) {
-                const c = arrayNode.child(i);
-                if (c && c.type !== 'identifier' && c.type !== '[' && c.type !== ']') {
-                    indexNode = c;
-                    break;
-                }
-            }
-        }
-        if (!arraySym || !indexNode) return;
+        const { baseSym, indexNodes } = this.resolveMultiDimSubscript(arrayNode, fn);
+        if (!baseSym || indexNodes.length === 0) return;
 
+        const dims = baseSym.typeInfo.dimensions || (baseSym.typeInfo.isArray ? [baseSym.typeInfo.arraySize] : []);
+
+        if (indexNodes.length > 1 && dims.length >= indexNodes.length) {
+            this.emitMultiDimOffsetStore(baseSym, dims, indexNodes, valueNode, fn);
+            return;
+        }
+
+        const indexNode = indexNodes[0];
         const constIndex = this.getConstantValue(indexNode);
         if (constIndex !== null) {
             this.emitLoadAccumulator(valueNode, fn);
-            this.emitLdAToArrayElem(arraySym, constIndex);
+            this.emitLdAToArrayElem(baseSym, constIndex);
             return;
         }
 
@@ -4172,13 +4442,13 @@ class SC8P053Compiler {
         this.emitLoadAccumulator(indexNode, fn);
         const t2 = this.allocTemp();
         this.emitLdAToTemp(t2);
-        if (arraySym.typeInfo.isArray) {
+        if (baseSym.typeInfo.isArray) {
             this.asmLines.push(
-                `LDIA 0x${(arraySym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                `LDIA 0x${(baseSym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
             );
             this.emitOpTemp('ADDA', t2);
         } else {
-            this.emitLdSymToA(arraySym);
+            this.emitLdSymToA(baseSym);
             this.emitOpTemp('ADDA', t2);
         }
         this.asmLines.push('CLRB STATUS,5');
@@ -4465,18 +4735,20 @@ class SC8P053Compiler {
         fn: Fn,
         op: string,
     ) {
-        const arraySym = this.resolveArraySymbol(left, fn);
-        let indexNode: Parser.SyntaxNode | null = left.childForFieldName('index');
-        if (!indexNode) {
-            for (let i = 0; i < left.childCount; i++) {
-                const c = left.child(i);
-                if (c && c.type !== 'identifier' && c.type !== '[' && c.type !== ']') {
-                    indexNode = c;
-                    break;
-                }
-            }
+        const { baseSym, indexNodes } = this.resolveMultiDimSubscript(left, fn);
+        if (!baseSym || indexNodes.length === 0) return;
+
+        const dims = baseSym.typeInfo.dimensions || (baseSym.typeInfo.isArray ? [baseSym.typeInfo.arraySize] : []);
+        const isMultiDim = indexNodes.length > 1 && dims.length >= indexNodes.length;
+
+        if (isMultiDim) {
+            this.emitMultiDimCompoundAssign(baseSym, dims, indexNodes, right, fn, op);
+            return;
         }
-        if (!arraySym || !indexNode) return;
+
+        const arraySym = baseSym;
+        let indexNode: Parser.SyntaxNode | null = indexNodes[0];
+        if (!indexNode) return;
 
         const constIndex = this.getConstantValue(indexNode);
         const constVal = this.getConstantValue(right);
@@ -4847,6 +5119,281 @@ class SC8P053Compiler {
         }
     }
 
+    private emitMultiDimCompoundAssign(
+        baseSym: Sym,
+        dims: number[],
+        indexNodes: Parser.SyntaxNode[],
+        right: Parser.SyntaxNode,
+        fn: Fn,
+        op: string,
+    ) {
+        const constIndices: (number | null)[] = indexNodes.map(n => this.getConstantValue(n));
+        const allConstIndices = constIndices.every(v => v !== null);
+        let flatConstIndex: number | null = null;
+        if (allConstIndices) {
+            flatConstIndex = this.computeFlatOffsetConst(dims.slice(0, indexNodes.length), constIndices as number[]);
+        }
+
+        const constVal = this.getConstantValue(right);
+        const isSigned = baseSym.typeInfo.type === 'i8';
+
+        if (['+=', '-=', '&=', '|=', '^='].includes(op)) {
+            if (flatConstIndex !== null) {
+                this.emitLdArrayElemToA(baseSym, flatConstIndex);
+            } else {
+                this.emitMultiDimOffsetLoad(baseSym, dims, indexNodes, fn);
+            }
+            switch (op) {
+                case '+=':
+                    if (constVal !== null)
+                        this.asmLines.push(`ADDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('ADDA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('ADDA', t);
+                        }
+                    }
+                    break;
+                case '-=':
+                    if (constVal !== null)
+                        this.asmLines.push(`HSUBIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('HSUBA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('SUBA', t);
+                        }
+                    }
+                    break;
+                case '&=':
+                    if (constVal !== null)
+                        this.asmLines.push(`ANDIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('ANDA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('ANDA', t);
+                        }
+                    }
+                    break;
+                case '|=':
+                    if (constVal !== null)
+                        this.asmLines.push(`ORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('ORA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('ORA', t);
+                        }
+                    }
+                    break;
+                case '^=':
+                    if (constVal !== null)
+                        this.asmLines.push(`XORIA 0x${constVal.toString(16).toUpperCase().padStart(2, '0')}`);
+                    else {
+                        const rsym = this.resolveSymbol(right, fn);
+                        if (rsym) this.emitOpSym('XORA', rsym);
+                        else {
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.emitLoadAccumulator(right, fn);
+                            this.emitOpTemp('XORA', t);
+                        }
+                    }
+                    break;
+            }
+            if (flatConstIndex !== null) {
+                this.emitLdAToArrayElem(baseSym, flatConstIndex);
+            } else {
+                this.emitMultiDimOffsetStoreA(baseSym, dims, indexNodes, fn);
+            }
+        } else if (op === '<<=' || op === '>>=') {
+            if (flatConstIndex !== null) {
+                this.emitLdArrayElemToA(baseSym, flatConstIndex);
+            } else {
+                this.emitMultiDimOffsetLoad(baseSym, dims, indexNodes, fn);
+            }
+            const shiftRight = op === '>>=';
+            const shiftConst = this.getConstantValue(right);
+            const t0 = this.allocTemp();
+            this.emitLdAToTemp(t0);
+            if (shiftConst !== null) {
+                if (shiftRight && isSigned && shiftConst > 0) {
+                    const negLabel = this.newLabel(fn);
+                    const posLabel = this.newLabel(fn);
+                    const endLabel = this.newLabel(fn);
+                    this.emitTestBitTemp('SNZB', t0, 7);
+                    this.asmLines.push(`JP ${posLabel}`);
+                    this.emitLabel(negLabel);
+                    for (let s = 0; s < shiftConst; s++) {
+                        this.asmLines.push('SETB STATUS,0');
+                        this.emitOpTemp('RRCA', t0);
+                        this.emitLdAToTemp(t0);
+                    }
+                    this.asmLines.push(`JP ${endLabel}`);
+                    this.emitLabel(posLabel);
+                    for (let s = 0; s < shiftConst; s++) {
+                        this.asmLines.push('CLRB STATUS,0');
+                        this.emitOpTemp('RRCA', t0);
+                        this.emitLdAToTemp(t0);
+                    }
+                    this.emitLabel(endLabel);
+                } else if (shiftRight) {
+                    for (let s = 0; s < shiftConst; s++) {
+                        this.asmLines.push('CLRB STATUS,0');
+                        this.emitOpTemp('RRCA', t0);
+                        this.emitLdAToTemp(t0);
+                    }
+                } else {
+                    for (let s = 0; s < shiftConst; s++) {
+                        this.emitLdTempToA(t0);
+                        this.emitOpTemp('ADDA', t0);
+                        this.emitLdAToTemp(t0);
+                    }
+                }
+                this.emitLdTempToA(t0);
+            } else {
+                this.emitLoadAccumulator(right, fn);
+                const t1 = this.allocTemp();
+                this.emitLdAToTemp(t1);
+                const loopLabel = this.newLabel(fn);
+                const doneLabel = this.newLabel(fn);
+                this.emitLdTempToA(t1);
+                this.asmLines.push('HSUBIA 0x00');
+                this.asmLines.push('SZB STATUS,2');
+                this.asmLines.push(`JP ${doneLabel}`);
+                this.emitLabel(loopLabel);
+                if (shiftRight) {
+                    if (isSigned) {
+                        this.emitTestBitTemp('SZB', t0, 7);
+                        this.asmLines.push('SETB STATUS,0');
+                        this.emitTestBitTemp('SNZB', t0, 7);
+                        this.asmLines.push('CLRB STATUS,0');
+                    } else {
+                        this.asmLines.push('CLRB STATUS,0');
+                    }
+                    this.emitOpTemp('RRCA', t0);
+                    this.emitLdAToTemp(t0);
+                } else {
+                    this.emitLdTempToA(t0);
+                    this.emitOpTemp('ADDA', t0);
+                    this.emitLdAToTemp(t0);
+                }
+                this.emitLdTempToA(t1);
+                this.asmLines.push('HSUBIA 0x01');
+                this.emitLdAToTemp(t1);
+                this.emitLdTempToA(t1);
+                this.asmLines.push('HSUBIA 0x00');
+                this.asmLines.push('SNZB STATUS,2');
+                this.asmLines.push(`JP ${loopLabel}`);
+                this.emitLabel(doneLabel);
+                this.emitLdTempToA(t0);
+            }
+            if (flatConstIndex !== null) {
+                this.emitLdAToArrayElem(baseSym, flatConstIndex);
+            } else {
+                this.emitMultiDimOffsetStoreA(baseSym, dims, indexNodes, fn);
+            }
+        } else if (op === '*=' || op === '/=' || op === '%=') {
+            if (isSigned && (op === '/=' || op === '%=')) {
+                throw new Error(`Signed division/modulo compound assignment on multidimensional array not supported`);
+            }
+            if (flatConstIndex !== null) {
+                this.emitLdArrayElemToA(baseSym, flatConstIndex);
+            } else {
+                this.emitMultiDimOffsetLoad(baseSym, dims, indexNodes, fn);
+            }
+            const t0 = this.allocTemp();
+            this.emitLdAToTemp(t0);
+            this.emitLoadAccumulator(right, fn);
+            const t1 = this.allocTemp();
+            this.emitLdAToTemp(t1);
+
+            if (op === '*=') {
+                this.asmLines.push('CLRA');
+                const t2 = this.allocTemp();
+                this.emitLdAToTemp(t2);
+                const loop = this.newLabel(fn);
+                const done = this.newLabel(fn);
+                this.emitLabel(loop);
+                this.emitLdTempToA(t0);
+                this.asmLines.push('HSUBIA 0x00');
+                this.asmLines.push('SZB STATUS,2');
+                this.asmLines.push(`JP ${done}`);
+                this.emitLdTempToA(t2);
+                this.emitOpTemp('ADDA', t1);
+                this.emitLdAToTemp(t2);
+                this.emitLdTempToA(t0);
+                this.asmLines.push('HSUBIA 0x01');
+                this.emitLdAToTemp(t0);
+                this.asmLines.push(`JP ${loop}`);
+                this.emitLabel(done);
+                this.emitLdTempToA(t2);
+            } else if (op === '/=') {
+                this.asmLines.push('CLRA');
+                const t2 = this.allocTemp();
+                this.emitLdAToTemp(t2);
+                const skipLabel = this.newLabel(fn);
+                const loop = this.newLabel(fn);
+                const done = this.newLabel(fn);
+                this.emitLdTempToA(t1);
+                this.asmLines.push('HSUBIA 0x00');
+                this.asmLines.push('SZB STATUS,2');
+                this.asmLines.push(`JP ${skipLabel}`);
+                this.emitLabel(loop);
+                this.emitLdTempToA(t1);
+                this.emitOpTemp('SUBA', t0);
+                this.asmLines.push('SNZB STATUS,0');
+                this.asmLines.push(`JP ${done}`);
+                this.emitLdAToTemp(t0);
+                this.emitLdTempToA(t2);
+                this.asmLines.push('ADDIA 0x01');
+                this.emitLdAToTemp(t2);
+                this.asmLines.push(`JP ${loop}`);
+                this.emitLabel(done);
+                this.emitLabel(skipLabel);
+                this.emitLdTempToA(t2);
+            } else {
+                const skipLabel = this.newLabel(fn);
+                const loop = this.newLabel(fn);
+                const done = this.newLabel(fn);
+                this.emitLdTempToA(t1);
+                this.asmLines.push('HSUBIA 0x00');
+                this.asmLines.push('SZB STATUS,2');
+                this.asmLines.push(`JP ${skipLabel}`);
+                this.emitLabel(loop);
+                this.emitLdTempToA(t1);
+                this.emitOpTemp('SUBA', t0);
+                this.asmLines.push('SNZB STATUS,0');
+                this.asmLines.push(`JP ${done}`);
+                this.emitLdAToTemp(t0);
+                this.asmLines.push(`JP ${loop}`);
+                this.emitLabel(done);
+                this.emitLabel(skipLabel);
+                this.emitLdTempToA(t0);
+            }
+
+            if (flatConstIndex !== null) {
+                this.emitLdAToArrayElem(baseSym, flatConstIndex);
+            } else {
+                this.emitMultiDimOffsetStoreA(baseSym, dims, indexNodes, fn);
+            }
+        }
+    }
+
     private emitCallExpression(node: Parser.SyntaxNode, fn: Fn, usedAsValue = false) {
         const funcNode = node.childForFieldName('function');
         const argsNode = node.childForFieldName('arguments');
@@ -4856,11 +5403,11 @@ class SC8P053Compiler {
         const targetFunc = this.fns.get(funcName);
 
         if (!targetFunc) {
-            throw new Error(`Function '${funcName}' is not defined`);
+            throw new Error(`Function '${funcName}' is not defined at ${this.posStr(funcNode)}`);
         }
 
         if (targetFunc.returnType === 'void' && usedAsValue) {
-            throw new Error(`Function '${funcName}' returns void and cannot be used as a value`);
+            throw new Error(`Function '${funcName}' returns void and cannot be used as a value at ${this.posStr(node)}`);
         }
 
         if (argsNode && targetFunc) {
@@ -4984,18 +5531,75 @@ class SC8P053Compiler {
         }
 
         if (argument.type === 'subscript_expression') {
-            const arraySym = this.resolveArraySymbol(argument, fn);
-            let indexNode: Parser.SyntaxNode | null = argument.childForFieldName('index');
-            if (!indexNode) {
-                for (let i = 0; i < argument.childCount; i++) {
-                    const c = argument.child(i);
-                    if (c && c.type !== 'identifier' && c.type !== '[' && c.type !== ']') {
-                        indexNode = c;
-                        break;
+            const { baseSym, indexNodes } = this.resolveMultiDimSubscript(argument, fn);
+            if (!baseSym || indexNodes.length === 0) return;
+
+            const dims = baseSym.typeInfo.dimensions || (baseSym.typeInfo.isArray ? [baseSym.typeInfo.arraySize] : []);
+            const isMultiDim = indexNodes.length > 1 && dims.length >= indexNodes.length;
+
+            if (isMultiDim) {
+                const constIndices: (number | null)[] = indexNodes.map(n => this.getConstantValue(n));
+                const allConstIndices = constIndices.every(v => v !== null);
+                let flatConstIndex: number | null = null;
+                if (allConstIndices) {
+                    flatConstIndex = this.computeFlatOffsetConst(dims.slice(0, indexNodes.length), constIndices as number[]);
+                }
+
+                if (operator.text === '++') {
+                    if (flatConstIndex !== null) {
+                        if (isPrefix) {
+                            this.emitLdArrayElemToA(baseSym, flatConstIndex);
+                            this.asmLines.push('ADDIA 0x01');
+                            this.emitLdAToArrayElem(baseSym, flatConstIndex);
+                        } else {
+                            this.emitLdArrayElemToA(baseSym, flatConstIndex);
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.asmLines.push('ADDIA 0x01');
+                            this.emitLdAToArrayElem(baseSym, flatConstIndex);
+                            this.emitLdTempToA(t);
+                        }
+                    } else {
+                        this.emitMultiDimOffsetLoad(baseSym, dims, indexNodes, fn);
+                        const t = this.allocTemp();
+                        this.emitLdAToTemp(t);
+                        this.asmLines.push('ADDIA 0x01');
+                        this.emitMultiDimOffsetStoreA(baseSym, dims, indexNodes, fn);
+                        if (!isPrefix) {
+                            this.emitLdTempToA(t);
+                        }
+                    }
+                } else if (operator.text === '--') {
+                    if (flatConstIndex !== null) {
+                        if (isPrefix) {
+                            this.emitLdArrayElemToA(baseSym, flatConstIndex);
+                            this.asmLines.push('HSUBIA 0x01');
+                            this.emitLdAToArrayElem(baseSym, flatConstIndex);
+                        } else {
+                            this.emitLdArrayElemToA(baseSym, flatConstIndex);
+                            const t = this.allocTemp();
+                            this.emitLdAToTemp(t);
+                            this.asmLines.push('HSUBIA 0x01');
+                            this.emitLdAToArrayElem(baseSym, flatConstIndex);
+                            this.emitLdTempToA(t);
+                        }
+                    } else {
+                        this.emitMultiDimOffsetLoad(baseSym, dims, indexNodes, fn);
+                        const t = this.allocTemp();
+                        this.emitLdAToTemp(t);
+                        this.asmLines.push('HSUBIA 0x01');
+                        this.emitMultiDimOffsetStoreA(baseSym, dims, indexNodes, fn);
+                        if (!isPrefix) {
+                            this.emitLdTempToA(t);
+                        }
                     }
                 }
+                return;
             }
-            if (!arraySym || !indexNode) return;
+
+            const arraySym = baseSym;
+            let indexNode: Parser.SyntaxNode | null = indexNodes[0];
+            if (!indexNode) return;
 
             const constIndex = this.getConstantValue(indexNode);
 
@@ -5081,7 +5685,7 @@ class SC8P053Compiler {
         if (!sym) {
             if (!this.isValidLvalue(argument, fn)) {
                 throw new Error(
-                    `Cannot increment/decrement '${argument.text.trim()}' - not an lvalue`,
+                    `Cannot increment/decrement '${argument.text.trim()}' at ${this.posStr(argument)} - not an lvalue`,
                 );
             }
             return;
@@ -5238,7 +5842,7 @@ class SC8P053Compiler {
             } else {
                 const name = inner.text.trim();
                 if (!this.fns.has(name)) {
-                    throw new Error(`Variable '${name}' is not defined`);
+                    throw new Error(`Variable '${name}' is not defined at ${this.posStr(inner)}`);
                 }
             }
             return;
@@ -5280,6 +5884,15 @@ class SC8P053Compiler {
                         `LDIA 0x${sym.typeInfo.arraySize.toString(16).toUpperCase().padStart(2, '0')}`,
                     );
                     return;
+                }
+                if (sizeofArg.type === 'subscript_expression') {
+                    const argType = this.typeInfoOf(sizeofArg, fn);
+                    if (argType.isArray) {
+                        this.asmLines.push(
+                            `LDIA 0x${argType.arraySize.toString(16).toUpperCase().padStart(2, '0')}`,
+                        );
+                        return;
+                    }
                 }
             }
             this.asmLines.push('LDIA 0x01');
@@ -5342,34 +5955,101 @@ class SC8P053Compiler {
                         }
                         return;
                     } else if (argNode.type === 'subscript_expression') {
-                        const arraySym = this.resolveArraySymbol(argNode, fn);
-                        if (!arraySym)
+                        const { baseSym, indexNodes } = this.resolveMultiDimSubscript(argNode, fn);
+                        if (!baseSym)
                             throw new Error(
                                 `Cannot take address of '${argNode.text.trim()}' - not an array element`,
                             );
 
-                        const indexNode = argNode.childForFieldName('index');
-                        if (!indexNode) return;
+                        const dims = baseSym.typeInfo.dimensions || (baseSym.typeInfo.isArray ? [baseSym.typeInfo.arraySize] : []);
+                        const constIndices: (number | null)[] = indexNodes.map(n => this.getConstantValue(n));
 
-                        const constIndex = this.getConstantValue(indexNode);
-                        if (constIndex !== null) {
-                            const addr = (arraySym.ramAddr + constIndex) & 0xff;
+                        if (dims.length >= indexNodes.length && constIndices.every(v => v !== null)) {
+                            const flatOffset = this.computeFlatOffsetConst(dims.slice(0, indexNodes.length), constIndices as number[]);
+                            const addr = (baseSym.ramAddr + flatOffset) & 0xff;
                             this.asmLines.push(
                                 `LDIA 0x${addr.toString(16).toUpperCase().padStart(2, '0')}`,
                             );
-                        } else {
-                            this.emitLoadAccumulator(indexNode, fn);
-                            const t = this.allocTemp();
-                            this.emitLdAToTemp(t);
+                        } else if (dims.length >= indexNodes.length) {
+                            let constOffset = 0;
+                            const varTemps: number[] = [];
+                            for (let d = 0; d < indexNodes.length; d++) {
+                                const remainingStride = d < dims.length - 1 ? dims.slice(d + 1).reduce((a, b) => a * b, 1) : 1;
+                                if (constIndices[d] !== null) {
+                                    constOffset += constIndices[d]! * remainingStride;
+                                } else {
+                                    this.emitLoadAccumulator(indexNodes[d], fn);
+                                    const t = this.allocTemp();
+                                    this.emitLdAToTemp(t);
+                                    varTemps.push(t);
+                                    if (remainingStride > 1) {
+                                        this.emitLdTempToA(t);
+                                        this.asmLines.push(
+                                            `LDIA 0x${(remainingStride & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                                        );
+                                        const tMul = this.allocTemp();
+                                        this.emitLdAToTemp(tMul);
+                                        this.emitLdTempToA(t);
+                                        const tResult = this.allocTemp();
+                                        this.emitLdAToTemp(tResult);
+                                        this.asmLines.push('CLRA');
+                                        const tAcc = this.allocTemp();
+                                        this.emitLdAToTemp(tAcc);
+                                        const loop = this.newLabel(fn);
+                                        const done = this.newLabel(fn);
+                                        this.emitLabel(loop);
+                                        this.emitLdTempToA(tResult);
+                                        this.asmLines.push('HSUBIA 0x00');
+                                        this.asmLines.push('SZB STATUS,2');
+                                        this.asmLines.push(`JP ${done}`);
+                                        this.emitLdTempToA(tAcc);
+                                        this.emitOpTemp('ADDA', tMul);
+                                        this.emitLdAToTemp(tAcc);
+                                        this.emitLdTempToA(tResult);
+                                        this.asmLines.push('HSUBIA 0x01');
+                                        this.emitLdAToTemp(tResult);
+                                        this.asmLines.push(`JP ${loop}`);
+                                        this.emitLabel(done);
+                                        this.emitLdTempToA(tAcc);
+                                        this.emitLdAToTemp(t);
+                                        varTemps[varTemps.length - 1] = t;
+                                    }
+                                }
+                            }
                             this.asmLines.push(
-                                `LDIA 0x${(arraySym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                                `LDIA 0x${((baseSym.ramAddr + constOffset) & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
                             );
-                            this.emitOpTemp('ADDA', t);
+                            for (const t of varTemps) {
+                                this.emitOpTemp('ADDA', t);
+                            }
+                        } else {
+                            const arraySym = this.resolveArraySymbol(argNode, fn);
+                            if (!arraySym)
+                                throw new Error(
+                                    `Cannot take address of '${argNode.text.trim()}' - not an array element`,
+                                );
+                            const indexNode = argNode.childForFieldName('index');
+                            if (!indexNode) return;
+                            const constIndex = this.getConstantValue(indexNode);
+                            if (constIndex !== null) {
+                                const addr = (arraySym.ramAddr + constIndex) & 0xff;
+                                this.asmLines.push(
+                                    `LDIA 0x${addr.toString(16).toUpperCase().padStart(2, '0')}`,
+                                );
+                            } else {
+                                this.emitLoadAccumulator(indexNode, fn);
+                                const t = this.allocTemp();
+                                this.emitLdAToTemp(t);
+                                this.asmLines.push(
+                                    `LDIA 0x${(arraySym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                                );
+                                this.emitOpTemp('ADDA', t);
+                            }
                         }
                         return;
                     }
                     throw new Error(
-                        `Cannot take address of '${argNode.text.trim()}' - not an lvalue`,
+                        `Cannot take address of '${argNode.text.trim()}' at ${this.posStr(argNode)} - not an lvalue`,
                     );
                 }
                 if (opNode.text === '*') {
@@ -5704,8 +6384,12 @@ class SC8P053Compiler {
         this.emitLoadAccumulator(argument, fn);
     }
 
-    private emitArrayLoad(node: Parser.SyntaxNode, fn: Fn) {
-        const arraySym = this.resolveArraySymbol(node, fn);
+    private resolveMultiDimSubscript(
+        node: Parser.SyntaxNode,
+        fn: Fn,
+    ): { baseSym: Sym | null; indexNodes: Parser.SyntaxNode[] } {
+        let arrayNode = node.childForFieldName('array');
+        if (!arrayNode) arrayNode = node.childForFieldName('argument');
         let indexNode: Parser.SyntaxNode | null = node.childForFieldName('index');
         if (!indexNode) {
             for (let i = 0; i < node.childCount; i++) {
@@ -5716,24 +6400,304 @@ class SC8P053Compiler {
                 }
             }
         }
-        if (!arraySym || !indexNode) return;
+        if (!indexNode) return { baseSym: null, indexNodes: [] };
 
+        if (arrayNode && arrayNode.type === 'subscript_expression') {
+            const inner = this.resolveMultiDimSubscript(arrayNode, fn);
+            return { baseSym: inner.baseSym, indexNodes: [...inner.indexNodes, indexNode] };
+        }
+
+        let baseSym: Sym | null = null;
+        if (arrayNode) {
+            baseSym = this.resolveSymbol(arrayNode, fn);
+        } else {
+            for (let i = 0; i < node.childCount; i++) {
+                const c = node.child(i);
+                if (c && c.type === 'identifier') {
+                    baseSym = this.resolveSymbol(c, fn);
+                    break;
+                }
+            }
+        }
+        return { baseSym, indexNodes: [indexNode] };
+    }
+
+    private computeFlatOffsetConst(dimensions: number[], constIndices: number[]): number {
+        let offset = 0;
+        let stride = 1;
+        for (let d = dimensions.length - 1; d > 0; d--) {
+            stride *= dimensions[d];
+        }
+        for (let d = 0; d < constIndices.length; d++) {
+            const remainingStride = d < dimensions.length - 1 ? dimensions.slice(d + 1).reduce((a, b) => a * b, 1) : 1;
+            offset += constIndices[d] * remainingStride;
+        }
+        return offset;
+    }
+
+    private emitMultiDimOffsetLoad(
+        baseSym: Sym,
+        dimensions: number[],
+        indexNodes: Parser.SyntaxNode[],
+        fn: Fn,
+    ) {
+        const ndim = dimensions.length;
+        const constIndices: (number | null)[] = indexNodes.map(n => this.getConstantValue(n));
+
+        const allConst = constIndices.every(v => v !== null);
+        if (allConst) {
+            const flatOffset = this.computeFlatOffsetConst(dimensions, constIndices as number[]);
+            this.emitLdArrayElemToA(baseSym, flatOffset);
+            return;
+        }
+
+        let offset = 0;
+        let firstVarDim = -1;
+        for (let d = 0; d < ndim; d++) {
+            if (constIndices[d] !== null) {
+                const remainingStride = d < ndim - 1 ? dimensions.slice(d + 1).reduce((a, b) => a * b, 1) : 1;
+                offset += constIndices[d]! * remainingStride;
+            } else {
+                firstVarDim = d;
+            }
+        }
+
+        const temps: number[] = [];
+        for (let d = 0; d < ndim; d++) {
+            if (constIndices[d] !== null) continue;
+            const remainingStride = d < ndim - 1 ? dimensions.slice(d + 1).reduce((a, b) => a * b, 1) : 1;
+            this.emitLoadAccumulator(indexNodes[d], fn);
+            const t = this.allocTemp();
+            this.emitLdAToTemp(t);
+            temps.push(t);
+            if (remainingStride > 1) {
+                this.emitLdTempToA(t);
+                this.asmLines.push(
+                    `LDIA 0x${(remainingStride & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                );
+                const tMul = this.allocTemp();
+                this.emitLdAToTemp(tMul);
+                this.emitLdTempToA(t);
+                const tResult = this.allocTemp();
+                this.emitLdAToTemp(tResult);
+                this.asmLines.push('CLRA');
+                const tAcc = this.allocTemp();
+                this.emitLdAToTemp(tAcc);
+                const loop = this.newLabel(fn);
+                const done = this.newLabel(fn);
+                this.emitLabel(loop);
+                this.emitLdTempToA(tResult);
+                this.asmLines.push('HSUBIA 0x00');
+                this.asmLines.push('SZB STATUS,2');
+                this.asmLines.push(`JP ${done}`);
+                this.emitLdTempToA(tAcc);
+                this.emitOpTemp('ADDA', tMul);
+                this.emitLdAToTemp(tAcc);
+                this.emitLdTempToA(tResult);
+                this.asmLines.push('HSUBIA 0x01');
+                this.emitLdAToTemp(tResult);
+                this.asmLines.push(`JP ${loop}`);
+                this.emitLabel(done);
+                this.emitLdTempToA(tAcc);
+                this.emitLdAToTemp(t);
+                temps[temps.length - 1] = t;
+            }
+        }
+
+        this.asmLines.push(
+            `LDIA 0x${((baseSym.ramAddr + offset) & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+        );
+        for (const t of temps) {
+            this.emitOpTemp('ADDA', t);
+        }
+        this.emitIndirectRead();
+    }
+
+    private emitMultiDimOffsetStore(
+        baseSym: Sym,
+        dimensions: number[],
+        indexNodes: Parser.SyntaxNode[],
+        valueNode: Parser.SyntaxNode,
+        fn: Fn,
+    ) {
+        const ndim = dimensions.length;
+        const constIndices: (number | null)[] = indexNodes.map(n => this.getConstantValue(n));
+
+        const allConst = constIndices.every(v => v !== null);
+        if (allConst) {
+            const flatOffset = this.computeFlatOffsetConst(dimensions, constIndices as number[]);
+            this.emitLoadAccumulator(valueNode, fn);
+            this.emitLdAToArrayElem(baseSym, flatOffset);
+            return;
+        }
+
+        let offset = 0;
+        const temps: number[] = [];
+        for (let d = 0; d < ndim; d++) {
+            if (constIndices[d] !== null) {
+                const remainingStride = d < ndim - 1 ? dimensions.slice(d + 1).reduce((a, b) => a * b, 1) : 1;
+                offset += constIndices[d]! * remainingStride;
+            } else {
+                const remainingStride = d < ndim - 1 ? dimensions.slice(d + 1).reduce((a, b) => a * b, 1) : 1;
+                this.emitLoadAccumulator(indexNodes[d], fn);
+                const t = this.allocTemp();
+                this.emitLdAToTemp(t);
+                temps.push(t);
+                if (remainingStride > 1) {
+                    this.emitLdTempToA(t);
+                    this.asmLines.push(
+                        `LDIA 0x${(remainingStride & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                    );
+                    const tMul = this.allocTemp();
+                    this.emitLdAToTemp(tMul);
+                    this.emitLdTempToA(t);
+                    const tResult = this.allocTemp();
+                    this.emitLdAToTemp(tResult);
+                    this.asmLines.push('CLRA');
+                    const tAcc = this.allocTemp();
+                    this.emitLdAToTemp(tAcc);
+                    const loop = this.newLabel(fn);
+                    const done = this.newLabel(fn);
+                    this.emitLabel(loop);
+                    this.emitLdTempToA(tResult);
+                    this.asmLines.push('HSUBIA 0x00');
+                    this.asmLines.push('SZB STATUS,2');
+                    this.asmLines.push(`JP ${done}`);
+                    this.emitLdTempToA(tAcc);
+                    this.emitOpTemp('ADDA', tMul);
+                    this.emitLdAToTemp(tAcc);
+                    this.emitLdTempToA(tResult);
+                    this.asmLines.push('HSUBIA 0x01');
+                    this.emitLdAToTemp(tResult);
+                    this.asmLines.push(`JP ${loop}`);
+                    this.emitLabel(done);
+                    this.emitLdTempToA(tAcc);
+                    this.emitLdAToTemp(t);
+                    temps[temps.length - 1] = t;
+                }
+            }
+        }
+
+        const tVal = this.allocTemp();
+        this.emitLoadAccumulator(valueNode, fn);
+        this.emitLdAToTemp(tVal);
+
+        this.asmLines.push(
+            `LDIA 0x${((baseSym.ramAddr + offset) & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+        );
+        for (const t of temps) {
+            this.emitOpTemp('ADDA', t);
+        }
+        this.emitIndirectSetFSR();
+        this.emitLdTempToA(tVal);
+        this.asmLines.push('LD INDF,A');
+    }
+
+    private emitMultiDimOffsetStoreA(
+        baseSym: Sym,
+        dimensions: number[],
+        indexNodes: Parser.SyntaxNode[],
+        fn: Fn,
+    ) {
+        const ndim = dimensions.length;
+        const constIndices: (number | null)[] = indexNodes.map(n => this.getConstantValue(n));
+
+        const allConst = constIndices.every(v => v !== null);
+        if (allConst) {
+            const flatOffset = this.computeFlatOffsetConst(dimensions, constIndices as number[]);
+            this.emitLdAToArrayElem(baseSym, flatOffset);
+            return;
+        }
+
+        const tVal = this.allocTemp();
+        this.emitLdAToTemp(tVal);
+
+        let offset = 0;
+        const temps: number[] = [];
+        for (let d = 0; d < ndim; d++) {
+            if (constIndices[d] !== null) {
+                const remainingStride = d < ndim - 1 ? dimensions.slice(d + 1).reduce((a, b) => a * b, 1) : 1;
+                offset += constIndices[d]! * remainingStride;
+            } else {
+                const remainingStride = d < ndim - 1 ? dimensions.slice(d + 1).reduce((a, b) => a * b, 1) : 1;
+                this.emitLoadAccumulator(indexNodes[d], fn);
+                const t = this.allocTemp();
+                this.emitLdAToTemp(t);
+                temps.push(t);
+                if (remainingStride > 1) {
+                    this.emitLdTempToA(t);
+                    this.asmLines.push(
+                        `LDIA 0x${(remainingStride & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                    );
+                    const tMul = this.allocTemp();
+                    this.emitLdAToTemp(tMul);
+                    this.emitLdTempToA(t);
+                    const tResult = this.allocTemp();
+                    this.emitLdAToTemp(tResult);
+                    this.asmLines.push('CLRA');
+                    const tAcc = this.allocTemp();
+                    this.emitLdAToTemp(tAcc);
+                    const loop = this.newLabel(fn);
+                    const done = this.newLabel(fn);
+                    this.emitLabel(loop);
+                    this.emitLdTempToA(tResult);
+                    this.asmLines.push('HSUBIA 0x00');
+                    this.asmLines.push('SZB STATUS,2');
+                    this.asmLines.push(`JP ${done}`);
+                    this.emitLdTempToA(tAcc);
+                    this.emitOpTemp('ADDA', tMul);
+                    this.emitLdAToTemp(tAcc);
+                    this.emitLdTempToA(tResult);
+                    this.asmLines.push('HSUBIA 0x01');
+                    this.emitLdAToTemp(tResult);
+                    this.asmLines.push(`JP ${loop}`);
+                    this.emitLabel(done);
+                    this.emitLdTempToA(tAcc);
+                    this.emitLdAToTemp(t);
+                    temps[temps.length - 1] = t;
+                }
+            }
+        }
+
+        this.asmLines.push(
+            `LDIA 0x${((baseSym.ramAddr + offset) & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+        );
+        for (const t of temps) {
+            this.emitOpTemp('ADDA', t);
+        }
+        this.emitIndirectSetFSR();
+        this.emitLdTempToA(tVal);
+        this.asmLines.push('LD INDF,A');
+    }
+
+    private emitArrayLoad(node: Parser.SyntaxNode, fn: Fn) {
+        const { baseSym, indexNodes } = this.resolveMultiDimSubscript(node, fn);
+        if (!baseSym || indexNodes.length === 0) return;
+
+        const dims = baseSym.typeInfo.dimensions || (baseSym.typeInfo.isArray ? [baseSym.typeInfo.arraySize] : []);
+
+        if (indexNodes.length > 1 && dims.length >= indexNodes.length) {
+            this.emitMultiDimOffsetLoad(baseSym, dims, indexNodes, fn);
+            return;
+        }
+
+        const indexNode = indexNodes[0];
         const constIndex = this.getConstantValue(indexNode);
         if (constIndex !== null) {
-            this.emitLdArrayElemToA(arraySym, constIndex);
+            this.emitLdArrayElemToA(baseSym, constIndex);
             return;
         }
 
         const t = this.allocTemp();
         this.emitLoadAccumulator(indexNode, fn);
         this.emitLdAToTemp(t);
-        if (arraySym.typeInfo.isArray) {
+        if (baseSym.typeInfo.isArray) {
             this.asmLines.push(
-                `LDIA 0x${(arraySym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
+                `LDIA 0x${(baseSym.ramAddr & 0xff).toString(16).toUpperCase().padStart(2, '0')}`,
             );
             this.emitOpTemp('ADDA', t);
         } else {
-            this.emitLdSymToA(arraySym);
+            this.emitLdSymToA(baseSym);
             this.emitOpTemp('ADDA', t);
         }
         this.emitIndirectRead();
@@ -5799,7 +6763,7 @@ class SC8P053Compiler {
         const rightConst = this.getConstantValue(right);
         const leftConst = this.getConstantValue(left);
         if (rightConst !== null && rightConst === 0) {
-            throw new Error('Division by zero');
+            throw new Error(`Division by zero at ${this.posStr(right)}`);
         }
         if (leftConst === 0) {
             this.asmLines.push('LDIA 0x00');
@@ -5866,7 +6830,7 @@ class SC8P053Compiler {
         const rightConst = this.getConstantValue(right);
         const leftConst = this.getConstantValue(left);
         if (rightConst !== null && rightConst === 0) {
-            throw new Error('Division by zero (modulo)');
+            throw new Error(`Division by zero (modulo) at ${this.posStr(right)}`);
         }
         if (rightConst === 1) {
             this.asmLines.push('LDIA 0x00');
@@ -5907,7 +6871,7 @@ class SC8P053Compiler {
         const rightConst = this.getConstantValue(right);
         const leftConst = this.getConstantValue(left);
         if (rightConst !== null && rightConst === 0) {
-            throw new Error('Division by zero');
+            throw new Error(`Division by zero at ${this.posStr(right)}`);
         }
         if (leftConst === 0) {
             this.asmLines.push('LDIA 0x00');
@@ -6005,7 +6969,7 @@ class SC8P053Compiler {
         const rightConst = this.getConstantValue(right);
         const leftConst = this.getConstantValue(left);
         if (rightConst !== null && rightConst === 0) {
-            throw new Error('Division by zero (modulo)');
+            throw new Error(`Division by zero (modulo) at ${this.posStr(right)}`);
         }
         if (rightConst === 1) {
             this.asmLines.push('LDIA 0x00');

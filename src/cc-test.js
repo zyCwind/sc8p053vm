@@ -2531,6 +2531,30 @@ async function runTests() {
         assert(readRam(vm, addrR) === 1, `10*2>15: r=1, got ${readRam(vm, addrR)}`);
     });
 
+    await test(`#error directive`, async () => {
+        try {
+            await compileAndRun('#error stop here\nvoid main() {}');
+            assert(false, 'should have thrown');
+        } catch (e) {
+            assert(e.message.includes('#error'), `expected #error, got: ${e.message}`);
+        }
+    });
+
+    await test(`#error in inactive #if does not fire`, async () => {
+        const { debugInfo, vm } = await compileAndRun('#if 0\n#error should not fire\n#endif\nvoid main() { unsigned char x = 1; }');
+        const addrX = getVarAddr(debugInfo, 'main', 'x');
+        assert(readRam(vm, addrX) === 1, `x=1, got ${readRam(vm, addrX)}`);
+    });
+
+    await test(`#error with message`, async () => {
+        try {
+            await compileAndRun('#error custom error message\nvoid main() {}');
+            assert(false, 'should have thrown');
+        } catch (e) {
+            assert(e.message.includes('custom error message'), `expected custom msg, got: ${e.message}`);
+        }
+    });
+
     await test(`pass array element address to function`, async () => {
         const { debugInfo, vm } = await compileAndRun('void set_val(unsigned char *p, unsigned char v) { *p = v; } void main() { unsigned char arr[3]; arr[0] = 0; arr[1] = 0; arr[2] = 0; set_val(&arr[1], 42); unsigned char r = arr[1]; }');
         const addrR = getVarAddr(debugInfo, 'main', 'r');
@@ -2733,13 +2757,146 @@ async function runTests() {
         assert(readRam(vm, addrR) === 1, `X==1: r=1, got ${readRam(vm, addrR)}`);
     });
 
-    await test(`error: 2D array not supported (Bug 94)`, async () => {
-        try {
-            await compileAndRun('void main() { unsigned char m[2][3]; m[0][0] = 1; unsigned char r = m[0][0]; }');
-            assert(false, 'should have thrown error for 2D array');
-        } catch (e) {
-            assert(e.message.includes('Multi-dimensional') || e.message.includes('not supported'), `expected not supported error, got: ${e.message}`);
-        }
+    await test(`2D array local with constant indices (Bug 94)`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][3]; m[0][0] = 1; m[1][2] = 7; unsigned char r = m[0][0]; unsigned char s = m[1][2]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        const addrS = getVarAddr(debugInfo, 'main', 's');
+        assert(readRam(vm, addrR) === 1, `m[0][0]=1, got ${readRam(vm, addrR)}`);
+        assert(readRam(vm, addrS) === 7, `m[1][2]=7, got ${readRam(vm, addrS)}`);
+    });
+
+    await test(`2D array with variable first index`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][3]; m[0][1] = 5; m[1][1] = 8; unsigned char i = 1; unsigned char r = m[i][1]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 8, `m[i][1]=8, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`2D array with variable second index`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][3]; m[1][0] = 3; m[1][2] = 6; unsigned char j = 2; unsigned char r = m[1][j]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 6, `m[1][j]=6, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`2D array with initializer`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][3] = {{1,2,3},{4,5,6}}; unsigned char r = m[1][1]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 5, `m[1][1]=5, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`2D array row-major order`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][3]; m[0][0] = 10; m[0][1] = 20; m[0][2] = 30; m[1][0] = 40; m[1][1] = 50; m[1][2] = 60; unsigned char r = m[1][0]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 40, `m[1][0]=40, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`2D array both indices variable`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][3]; m[0][0] = 11; m[0][1] = 12; m[0][2] = 13; m[1][0] = 21; m[1][1] = 22; m[1][2] = 23; unsigned char i = 1; unsigned char j = 2; unsigned char r = m[i][j]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 23, `m[i][j]=23, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`2D array compound assign`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][3]; m[1][1] = 10; m[1][1] += 5; unsigned char r = m[1][1]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 15, `m[1][1]+=5 => 15, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`2D array global with initializer`, async () => {
+        const { debugInfo, vm } = await compileAndRun('unsigned char g[2][2] = {{10,20},{30,40}}; void main() { unsigned char r = g[1][0]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 30, `g[1][0]=30, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`sizeof 2D array`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][3]; unsigned char s = sizeof(m); }');
+        const addrS = getVarAddr(debugInfo, 'main', 's');
+        assert(readRam(vm, addrS) === 6, `sizeof(m)=6, got ${readRam(vm, addrS)}`);
+    });
+
+    await test(`3D array with constant indices`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][2][3]; m[1][0][2] = 99; m[0][1][1] = 42; unsigned char a = m[1][0][2]; unsigned char b = m[0][1][1]; }');
+        const addrA = getVarAddr(debugInfo, 'main', 'a');
+        const addrB = getVarAddr(debugInfo, 'main', 'b');
+        assert(readRam(vm, addrA) === 99, `m[1][0][2]=99, got ${readRam(vm, addrA)}`);
+        assert(readRam(vm, addrB) === 42, `m[0][1][1]=42, got ${readRam(vm, addrB)}`);
+    });
+
+    await test(`3D array with variable indices`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][2][3]; m[0][0][0] = 11; m[0][0][1] = 12; m[0][1][0] = 21; m[1][0][0] = 31; unsigned char i = 1; unsigned char j = 0; unsigned char k = 0; unsigned char r = m[i][j][k]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 31, `m[i][j][k]=31, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`2D array post-increment`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][3]; m[1][1] = 5; m[1][1]++; unsigned char r = m[1][1]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 6, `m[1][1]++=>6, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`2D array pre-increment`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][3]; m[1][1] = 5; unsigned char r = ++m[1][1]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 6, `++m[1][1]=>6, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`2D array post-decrement`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][3]; m[1][1] = 5; m[1][1]--; unsigned char r = m[1][1]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 4, `m[1][1]--=>4, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`2D array nested for loop traversal`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][3]; unsigned char i; unsigned char j; unsigned char sum = 0; for (i = 0; i < 2; i++) { for (j = 0; j < 3; j++) { m[i][j] = i * 3 + j; sum = sum + m[i][j]; } } }');
+        const addrSum = getVarAddr(debugInfo, 'main', 'sum');
+        assert(readRam(vm, addrSum) === 15, `2D for sum=15, got ${readRam(vm, addrSum)}`);
+    });
+
+    await test(`sizeof partial 2D subscript`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][3]; unsigned char s = sizeof(m[0]); }');
+        const addrS = getVarAddr(debugInfo, 'main', 's');
+        assert(readRam(vm, addrS) === 3, `sizeof(m[0])=3, got ${readRam(vm, addrS)}`);
+    });
+
+    await test(`2D array address-of element`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][3]; unsigned char *p = &m[1][0]; *p = 77; unsigned char r = m[1][0]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 77, `*(&m[1][0])=77, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`2D array <<= with variable index`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][3]; unsigned char i = 1; unsigned char j = 1; m[i][j] = 1; m[i][j] <<= 2; unsigned char r = m[i][j]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 4, `m[i][j]<<=2 => 4, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`2D array *= compound assign`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][3]; m[1][1] = 3; m[1][1] *= 4; unsigned char r = m[1][1]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 12, `m[1][1]*=4 => 12, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`2D array in ternary`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[2][3]; m[0][0] = 5; m[1][0] = 10; unsigned char r = (m[0][0] > 3) ? m[1][0] : 0; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 10, `ternary 2D: r=10, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`2D global array no init`, async () => {
+        const { debugInfo, vm } = await compileAndRun('unsigned char g[2][2]; void main() { g[0][0] = 7; g[1][1] = 8; unsigned char r = g[0][0] + g[1][1]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 15, `2D global no init: r=15, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`2D array elem as function arg`, async () => {
+        const { debugInfo, vm } = await compileAndRun('unsigned char add(unsigned char a, unsigned char b) { return a + b; } void main() { unsigned char m[2][3]; m[0][0] = 3; m[1][1] = 4; unsigned char r = add(m[0][0], m[1][1]); }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 7, `2D func arg: r=7, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`3D array with initializer`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char m[1][2][2] = {{{10,20},{30,40}}}; unsigned char r = m[0][1][1]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 40, `3D init: r=40, got ${readRam(vm, addrR)}`);
     });
 
     await test(`pointer subscript p[0] (Bug 95)`, async () => {
@@ -2778,13 +2935,12 @@ async function runTests() {
         assert(readRam(vm, addrR) === 77, `gp[1]=77: arr[1]=77, got ${readRam(vm, addrR)}`);
     });
 
-    await test(`error: global 2D array not supported (Bug 94)`, async () => {
-        try {
-            await compileAndRun('unsigned char m[2][3]; void main() { m[0][0] = 1; }');
-            assert(false, 'should have thrown error for global 2D array');
-        } catch (e) {
-            assert(e.message.includes('Multi-dimensional') || e.message.includes('not supported'), `expected not supported error, got: ${e.message}`);
-        }
+    await test(`2D array global with constant indices (Bug 94)`, async () => {
+        const { debugInfo, vm } = await compileAndRun('unsigned char m[2][3]; void main() { m[0][0] = 1; m[1][2] = 9; unsigned char r = m[0][0]; unsigned char s = m[1][2]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        const addrS = getVarAddr(debugInfo, 'main', 's');
+        assert(readRam(vm, addrR) === 1, `m[0][0]=1, got ${readRam(vm, addrR)}`);
+        assert(readRam(vm, addrS) === 9, `m[1][2]=9, got ${readRam(vm, addrS)}`);
     });
 
     await test(`ISR with __interrupt syntax compiles correctly`, async () => {
@@ -3023,30 +3179,285 @@ void main() {}
         }
     });
 
-    await test(`error: top-level typedef not supported (Bug 67)`, async () => {
+    await test(`typedef unsigned char works`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; void main() { u8 x = 42; }');
+        const addrX = getVarAddr(debugInfo, 'main', 'x');
+        assert(readRam(vm, addrX) === 42, `typedef u8 x=42, got ${readRam(vm, addrX)}`);
+    });
+
+    await test(`typedef signed char`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef signed char i8; void main() { i8 x = -1; }');
+        const addrX = getVarAddr(debugInfo, 'main', 'x');
+        assert(readRam(vm, addrX) === 0xFF, `typedef i8 x=-1, got ${readRam(vm, addrX)}`);
+    });
+
+    await test(`typedef pointer`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char *pu8; void main() { unsigned char v = 7; pu8 p = &v; unsigned char r = *p; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 7, `typedef pu8 r=7, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`typedef in function params`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; u8 add(u8 a, u8 b) { return a + b; } void main() { u8 r = add(3, 4); }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 7, `typedef func param r=7, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`typedef local scope`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { typedef unsigned char local_t; local_t x = 99; }');
+        const addrX = getVarAddr(debugInfo, 'main', 'x');
+        assert(readRam(vm, addrX) === 99, `typedef local x=99, got ${readRam(vm, addrX)}`);
+    });
+
+    await test(`typedef chained`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char byte; typedef byte word; void main() { word w = 55; }');
+        const addrW = getVarAddr(debugInfo, 'main', 'w');
+        assert(readRam(vm, addrW) === 55, `typedef chained w=55, got ${readRam(vm, addrW)}`);
+    });
+
+    await test(`typedef array`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char arr3[3]; void main() { arr3 a; a[0] = 10; a[1] = 20; a[2] = 30; unsigned char r = a[0] + a[2]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 40, `typedef arr3 r=40, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`typedef global variable`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; u8 g = 33; void main() { u8 r = g; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 33, `typedef global var r=33, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`typedef unknown type error`, async () => {
         try {
-            await compileAndRun('typedef unsigned char u8; void main() {}');
-            assert(false, 'should have thrown error');
+            await compileAndRun('void main() { unknown_type x = 5; }');
+            assert(false, 'should have thrown');
         } catch (e) {
-            assert(e.message.includes('typedef'), `expected typedef error, got: ${e.message}`);
+            assert(e.message.includes('Unknown type'), `expected Unknown type, got: ${e.message}`);
         }
     });
 
-    await test(`error: goto not supported (Bug 68)`, async () => {
+    await test(`typedef with array subscript`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; void main() { u8 arr[5]; arr[2] = 33; u8 r = arr[2]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 33, `typedef arr[2]=33, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`typedef with 2D array`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; void main() { u8 m[2][3]; m[1][2] = 44; u8 r = m[1][2]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 44, `typedef 2D m[1][2]=44, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`typedef pointer dereference assign`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char *pu8; void main() { unsigned char v = 10; pu8 p = &v; *p = 20; unsigned char r = v; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 20, `typedef *p=20, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`typedef in multiple functions`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; u8 double_val(u8 x) { return x * 2; } void main() { u8 r = double_val(5); }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 10, `typedef multi-fn r=10, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`typedef global array`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; u8 garr[3]; void main() { garr[0] = 11; garr[1] = 22; garr[2] = 33; u8 r = garr[0] + garr[2]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 44, `typedef global arr r=44, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`typedef with for loop`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; void main() { u8 sum = 0; u8 i; for (i = 0; i < 5; i++) { sum += i; } }');
+        const addrSum = getVarAddr(debugInfo, 'main', 'sum');
+        assert(readRam(vm, addrSum) === 10, `typedef for sum=10, got ${readRam(vm, addrSum)}`);
+    });
+
+    await test(`typedef pointer param`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char *pu8; void set_val(pu8 p, unsigned char v) { *p = v; } void main() { unsigned char x = 0; set_val(&x, 42); }');
+        const addrX = getVarAddr(debugInfo, 'main', 'x');
+        assert(readRam(vm, addrX) === 42, `typedef ptr param x=42, got ${readRam(vm, addrX)}`);
+    });
+
+    await test(`typedef with sizeof`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; void main() { u8 arr[5]; unsigned char s = sizeof(arr); }');
+        const addrS = getVarAddr(debugInfo, 'main', 's');
+        assert(readRam(vm, addrS) === 5, `typedef sizeof(arr)=5, got ${readRam(vm, addrS)}`);
+    });
+
+    await test(`typedef with static local`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; void inc() { static u8 count = 0; count++; } void main() { inc(); inc(); inc(); }');
+        const addrCount = getVarAddr(debugInfo, 'inc', 'count');
+        assert(readRam(vm, addrCount) === 3, `typedef static count=3, got ${readRam(vm, addrCount)}`);
+    });
+
+    await test(`typedef with initializer list`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; void main() { u8 arr[3] = {10, 20, 30}; u8 r = arr[1]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 20, `typedef init list r=20, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`typedef return pointer`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char *pu8; unsigned char g = 55; pu8 get_ptr() { return &g; } void main() { pu8 p = get_ptr(); unsigned char r = *p; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 55, `typedef return ptr r=55, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`typedef pointer iterate array`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char *pu8; void main() { unsigned char arr[4]; arr[0] = 10; arr[1] = 20; arr[2] = 30; arr[3] = 40; pu8 p = &arr[0]; unsigned char sum = 0; unsigned char i; for (i = 0; i < 4; i++) { sum = sum + *(p + i); } }');
+        const addrSum = getVarAddr(debugInfo, 'main', 'sum');
+        assert(readRam(vm, addrSum) === 100, `typedef ptr iterate sum=100, got ${readRam(vm, addrSum)}`);
+    });
+
+    await test(`typedef global 2D array init`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; u8 g[2][2] = {{1,2},{3,4}}; void main() { u8 r = g[0][1] + g[1][0]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 5, `typedef 2D init r=5, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`typedef bool`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef bool flag; void main() { flag f = 1; unsigned char r = f ? 10 : 20; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 10, `typedef bool r=10, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`typedef redefinition error`, async () => {
         try {
-            await compileAndRun('void main() { goto label; }');
-            assert(false, 'should have thrown error');
+            await compileAndRun('typedef unsigned char u8; typedef unsigned char u8; void main() {}');
+            assert(false, 'should have thrown');
         } catch (e) {
-            assert(e.message.includes('goto'), `expected goto error, got: ${e.message}`);
+            assert(e.message.includes('redefined'), `expected redefined, got: ${e.message}`);
         }
     });
 
-    await test(`error: labeled statement not supported (Bug 69)`, async () => {
+    await test(`typedef with #ifndef guard`, async () => {
+        const { debugInfo, vm } = await compileAndRun('#ifndef MYTYPE_H\n#define MYTYPE_H\ntypedef unsigned char u8;\n#endif\nvoid main() { u8 x = 8; }');
+        const addrX = getVarAddr(debugInfo, 'main', 'x');
+        assert(readRam(vm, addrX) === 8, `typedef guard x=8, got ${readRam(vm, addrX)}`);
+    });
+
+    await test(`typedef with #define init`, async () => {
+        const { debugInfo, vm } = await compileAndRun('#define INIT_VAL 99\ntypedef unsigned char u8; void main() { u8 x = INIT_VAL; }');
+        const addrX = getVarAddr(debugInfo, 'main', 'x');
+        assert(readRam(vm, addrX) === 99, `typedef #define x=99, got ${readRam(vm, addrX)}`);
+    });
+
+    await test(`typedef arr to func`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; void fill(u8 *p, u8 val, u8 len) { u8 i; for (i = 0; i < len; i++) { p[i] = val; } } void main() { u8 arr[3]; fill(arr, 42, 3); u8 r = arr[1]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 42, `typedef arr func r=42, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`typedef 2D nested for`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; void main() { u8 m[2][3]; u8 i; u8 j; u8 sum = 0; for (i = 0; i < 2; i++) { for (j = 0; j < 3; j++) { m[i][j] = i * 3 + j + 1; sum += m[i][j]; } } }');
+        const addrSum = getVarAddr(debugInfo, 'main', 'sum');
+        assert(readRam(vm, addrSum) === 21, `typedef 2D for sum=21, got ${readRam(vm, addrSum)}`);
+    });
+
+    await test(`typedef 3D array`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; void main() { u8 m[2][2][2]; m[0][0][0] = 1; m[1][1][1] = 2; u8 r = m[0][0][0] + m[1][1][1]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 3, `typedef 3D r=3, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`typedef sizeof partial subscript`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; void main() { u8 m[2][3]; u8 s = sizeof(m[0]); }');
+        const addrS = getVarAddr(debugInfo, 'main', 's');
+        assert(readRam(vm, addrS) === 3, `typedef sizeof(m[0])=3, got ${readRam(vm, addrS)}`);
+    });
+
+    await test(`typedef 2D <<= variable index`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; void main() { u8 m[2][3]; u8 i = 1; u8 j = 1; m[i][j] = 2; m[i][j] <<= 3; u8 r = m[i][j]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 16, `typedef 2D <<= r=16, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`typedef 2D ++ variable index`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char u8; void main() { u8 m[2][3]; u8 i = 1; u8 j = 1; m[i][j] = 5; m[i][j]++; u8 r = m[i][j]; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 6, `typedef 2D ++ r=6, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`typedef global pointer`, async () => {
+        const { debugInfo, vm } = await compileAndRun('typedef unsigned char *pu8; unsigned char g = 88; pu8 gp = &g; void main() { unsigned char r = *gp; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 88, `typedef global ptr r=88, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`#error in #elif chain not reached`, async () => {
+        const { debugInfo, vm } = await compileAndRun('#define X 2\n#if X == 1\n#error bad1\n#elif X == 2\nunsigned char r = 10;\n#elif X == 3\n#error bad3\n#endif\nvoid main() {}');
+        const addrR = getVarAddr(debugInfo, 'global', 'r');
+        assert(readRam(vm, addrR) === 10, `#elif chain r=10, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`goto jumps to label (Bug 68)`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char a = 0; goto label; a = 99; label: a = a + 1; }');
+        const addrA = getVarAddr(debugInfo, 'main', 'a');
+        assert(readRam(vm, addrA) === 1, `goto label: a=1, got ${readRam(vm, addrA)}`);
+    });
+
+    await test(`labeled statement (Bug 69)`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char a; label: a = 5; }');
+        const addrA = getVarAddr(debugInfo, 'main', 'a');
+        assert(readRam(vm, addrA) === 5, `label: a=5, got ${readRam(vm, addrA)}`);
+    });
+
+    await test(`goto backward jump for loop`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char i = 0; unsigned char sum = 0; loop: sum = sum + i; i = i + 1; if (i < 5) goto loop; }');
+        const addrSum = getVarAddr(debugInfo, 'main', 'sum');
+        assert(readRam(vm, addrSum) === 10, `goto loop: sum=10, got ${readRam(vm, addrSum)}`);
+    });
+
+    await test(`goto forward skip`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char x = 10; goto skip; x = 20; skip: ; }');
+        const addrX = getVarAddr(debugInfo, 'main', 'x');
+        assert(readRam(vm, addrX) === 10, `goto skip: x=10, got ${readRam(vm, addrX)}`);
+    });
+
+    await test(`goto breaks out of while loop`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char i = 0; unsigned char sum = 0; while(1) { sum = sum + i; i = i + 1; if (i > 3) goto done; } done: ; }');
+        const addrSum = getVarAddr(debugInfo, 'main', 'sum');
+        assert(readRam(vm, addrSum) === 6, `goto break: sum=6, got ${readRam(vm, addrSum)}`);
+    });
+
+    await test(`goto from inside switch`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char x = 1; unsigned char r = 0; switch(x) { case 1: r = 10; goto end; case 2: r = 20; } end: ; }');
+        const addrR = getVarAddr(debugInfo, 'main', 'r');
+        assert(readRam(vm, addrR) === 10, `goto from switch: r=10, got ${readRam(vm, addrR)}`);
+    });
+
+    await test(`goto in for loop`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char i; unsigned char sum = 0; for (i = 0; i < 10; i++) { if (i == 5) goto done; sum += i; } done: ; }');
+        const addrSum = getVarAddr(debugInfo, 'main', 'sum');
+        assert(readRam(vm, addrSum) === 10, `goto in for: sum=10, got ${readRam(vm, addrSum)}`);
+    });
+
+    await test(`goto forward reference`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char x = 0; goto skip; x = 99; skip: x = x + 1; }');
+        const addrX = getVarAddr(debugInfo, 'main', 'x');
+        assert(readRam(vm, addrX) === 1, `goto forward: x=1, got ${readRam(vm, addrX)}`);
+    });
+
+    await test(`multiple goto same label`, async () => {
+        const { debugInfo, vm } = await compileAndRun('void main() { unsigned char x = 0; unsigned char i = 0; loop: x = x + 1; i = i + 1; if (i == 1) goto loop; }');
+        const addrX = getVarAddr(debugInfo, 'main', 'x');
+        assert(readRam(vm, addrX) === 2, `multi goto: x=2, got ${readRam(vm, addrX)}`);
+    });
+
+    await test(`error: goto to undefined label`, async () => {
         try {
-            await compileAndRun('void main() { unsigned char a; label: a = 5; }');
+            await compileAndRun('void main() { goto nonexistent; }');
             assert(false, 'should have thrown error');
         } catch (e) {
-            assert(e.message.includes('Label'), `expected Label error, got: ${e.message}`);
+            assert(e.message.includes('Undefined label') || e.message.includes('undefined') || e.message.includes('label'), `expected label error, got: ${e.message}`);
+        }
+    });
+
+    await test(`error: duplicate label`, async () => {
+        try {
+            await compileAndRun('void main() { unsigned char a; label: a = 1; label: a = 2; }');
+            assert(false, 'should have thrown error');
+        } catch (e) {
+            assert(e.message.includes('Duplicate') || e.message.includes('duplicate') || e.message.includes('label'), `expected duplicate label error, got: ${e.message}`);
         }
     });
 
@@ -3405,6 +3816,378 @@ void main() {}
         } catch (e) {
             assert(false, `should not have thrown error: ${e.message}`);
         }
+    });
+
+    // === Error Position Reporting Tests ===
+
+    async function getErrorPos(source) {
+        try {
+            await compile(source);
+            return null;
+        } catch (e) {
+            const lineMatch = e.message.match(/line (\d+)/);
+            const colMatch = e.message.match(/column (\d+)/);
+            return {
+                line: lineMatch ? parseInt(lineMatch[1]) : null,
+                col: colMatch ? parseInt(colMatch[1]) : null,
+                msg: e.message
+            };
+        }
+    }
+
+    await test(`error position: struct keyword reports correct line`, async () => {
+        const pos = await getErrorPos('unsigned char x;\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 2, `expected line 2, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: error after continuation line`, async () => {
+        const pos = await getErrorPos('unsigned char x = \\\n5;\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 3, `expected line 3, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: error after multi-line comment`, async () => {
+        const pos = await getErrorPos('unsigned char x;\n/* comment\n   lines */\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 4, `expected line 4, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: error after macro expansion`, async () => {
+        const pos = await getErrorPos('#define A 123\nunsigned char x = A;\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 3, `expected line 3, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: error after #if 0 block`, async () => {
+        const pos = await getErrorPos('unsigned char x;\n#if 0\nthis is skipped\n#endif\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 5, `expected line 5, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: error after multiple continuation lines`, async () => {
+        const pos = await getErrorPos('unsigned char x = \\\n1 + \\\n2;\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 4, `expected line 4, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: error after inline comment`, async () => {
+        const pos = await getErrorPos('unsigned char x; // comment\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 2, `expected line 2, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: error with empty lines`, async () => {
+        const pos = await getErrorPos('unsigned char x;\n\n\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 4, `expected line 4, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: error after multi-line #define`, async () => {
+        const pos = await getErrorPos('#define MACRO \\\n    123\nunsigned char x = MACRO;\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 4, `expected line 4, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: error after nested #if/#else`, async () => {
+        const pos = await getErrorPos('#if 1\nunsigned char x;\n#else\nunsigned char y;\n#endif\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 6, `expected line 6, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: undefined variable includes line info`, async () => {
+        const pos = await getErrorPos('void main() { y = 5; }');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+    });
+
+    await test(`error position: undefined function includes line info`, async () => {
+        const pos = await getErrorPos('void main() { foo(); }');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+    });
+
+    await test(`error position: unsupported type includes line info`, async () => {
+        const pos = await getErrorPos('float x;\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+    });
+
+    await test(`error position: error in active #if block after inactive block`, async () => {
+        const pos = await getErrorPos('#if 0\nstruct foo { int a; };\n#endif\n#if 1\nstruct foo { int a; };\n#endif\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 5, `expected line 5, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: break outside loop includes line info`, async () => {
+        const pos = await getErrorPos('void main() { break; }');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+    });
+
+    await test(`error position: continue outside loop includes line info`, async () => {
+        const pos = await getErrorPos('void main() { continue; }');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+    });
+
+    await test(`goto compiles without error`, async () => {
+        const { vm } = await compileAndRun('void main() { goto label; label: ; }');
+        assert(true, 'goto compiles successfully');
+    });
+
+    await test(`error position: duplicate global variable includes line info`, async () => {
+        const pos = await getErrorPos('unsigned char x;\nunsigned char x;\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+    });
+
+    await test(`error position: duplicate function includes line info`, async () => {
+        const pos = await getErrorPos('void foo() {}\nvoid foo() {}\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+    });
+
+    await test(`error position: division by zero includes line info`, async () => {
+        const pos = await getErrorPos('unsigned char x;\nvoid main() { x = 5 / 0; }');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+    });
+
+    await test(`error position: enum not supported includes line info`, async () => {
+        const pos = await getErrorPos('enum foo { A, B };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+    });
+
+    await test(`error position: unknown type includes line info`, async () => {
+        const pos = await getErrorPos('unknown_type x;\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+    });
+
+    await test(`error position: int type not supported includes line and column`, async () => {
+        const pos = await getErrorPos('int x;\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+        assert(pos.col !== null, `should have column info but got: ${pos.msg}`);
+    });
+
+    await test(`error position: syntax error includes line and column`, async () => {
+        const pos = await getErrorPos('unsigned char x;\nvoid main() { x = ; }');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+        assert(pos.col !== null, `should have column info but got: ${pos.msg}`);
+    });
+
+    await test(`error position: void function return value includes line info`, async () => {
+        const pos = await getErrorPos('void foo() { return 5; }\nvoid main() { foo(); }');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+    });
+
+    await test(`error position: lvalue error includes line info`, async () => {
+        const pos = await getErrorPos('void main() { 5 = 3; }');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+    });
+
+    await test(`error position: error after #define with continuation`, async () => {
+        const pos = await getErrorPos('#define A \\\n    5\nunsigned char x = A;\nint y;\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 4, `expected line 4, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: multiple #if 0 blocks`, async () => {
+        const pos = await getErrorPos('#if 0\nskipped1\n#endif\n#if 0\nskipped2\n#endif\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 7, `expected line 7, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: error in function body after continuation`, async () => {
+        const pos = await getErrorPos('unsigned char x = \\\n5;\nvoid main() { foo(); }');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 3, `expected line 3, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: nested #if 0 blocks skip inner content`, async () => {
+        const pos = await getErrorPos('#if 0\n#if 1\nnested\n#endif\n#endif\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 6, `expected line 6, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: column position for struct after spaces`, async () => {
+        const pos = await getErrorPos('     struct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.col === 6, `expected col 6, got col ${pos.col}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: error after 3 continuation lines`, async () => {
+        const pos = await getErrorPos('unsigned char x = \\\n1 + \\\n2 + \\\n3;\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 5, `expected line 5, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: undefined function in second function body`, async () => {
+        const pos = await getErrorPos('void foo() {}\nvoid bar() { baz(); }');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 2, `expected line 2, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: error on line 10 with various preprocessing`, async () => {
+        const source = [
+            '#define A 1',
+            '// comment',
+            'unsigned char x;',
+            '/* multi',
+            '   line',
+            '   comment */',
+            '#if 0',
+            'skipped',
+            '#endif',
+            'struct foo { int a; };',
+            'void main() {}'
+        ].join('\n');
+        const pos = await getErrorPos(source);
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 10, `expected line 10, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: #ifdef block`, async () => {
+        const pos = await getErrorPos('#ifdef FOO\nunsigned char x;\n#endif\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 4, `expected line 4, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: comment-only lines`, async () => {
+        const pos = await getErrorPos('// line 1\n// line 2\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 3, `expected line 3, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: multiple #define lines`, async () => {
+        const pos = await getErrorPos('#define A\n#define B\n#define C\nunsigned char x;\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 5, `expected line 5, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: #elif in #if 0 block skipped`, async () => {
+        const pos = await getErrorPos('#if 0\n#elif 1\nunsigned char x;\n#endif\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 5, `expected line 5, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: #else in #if 0 block skipped`, async () => {
+        const pos = await getErrorPos('#if 0\n#else\nunsigned char x;\n#endif\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 5, `expected line 5, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: 3 levels of #if 0 nesting`, async () => {
+        const pos = await getErrorPos('#if 0\n#if 0\n#if 1\nnested\n#endif\n#endif\n#endif\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 8, `expected line 8, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: dereference non-pointer includes line info`, async () => {
+        const pos = await getErrorPos('void main() { unsigned char a; unsigned char b; b = *a; }');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+    });
+
+    await test(`error position: #if defined() with undefined macro`, async () => {
+        const pos = await getErrorPos('#if defined(FOO)\nunsigned char x;\n#endif\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 4, `expected line 4, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: #ifndef with undefined macro (active)`, async () => {
+        const pos = await getErrorPos('#ifndef FOO\nstruct foo { int a; };\n#endif\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 2, `expected line 2, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: #ifndef with defined macro (inactive)`, async () => {
+        const pos = await getErrorPos('#define FOO\n#ifndef FOO\nstruct foo { int a; };\n#endif\nvoid main() {}');
+        assert(pos === null, `expected no error, got: ${pos?.msg}`);
+    });
+
+    await test(`error position: error on line 20 of long file`, async () => {
+        const lines = [];
+        for (let i = 1; i <= 19; i++) {
+            lines.push('unsigned char v' + i + ' = ' + i + ';');
+        }
+        lines.push('struct foo { int a; };');
+        lines.push('void main() {}');
+        const pos = await getErrorPos(lines.join('\n'));
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 20, `expected line 20, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: function-like macro`, async () => {
+        const pos = await getErrorPos('#define ADD(a,b) ((a)+(b))\nunsigned char x = ADD(1,2);\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 3, `expected line 3, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: continuation in #if 1 block`, async () => {
+        const pos = await getErrorPos('#if 1\nunsigned char x = \\\n5;\n#endif\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 5, `expected line 5, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: continuation in #else block`, async () => {
+        const pos = await getErrorPos('#if 0\nunsigned char x;\n#else\nunsigned char x = \\\n5;\n#endif\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 7, `expected line 7, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: assign pointer to non-pointer includes line info`, async () => {
+        const pos = await getErrorPos('void main() { unsigned char a; unsigned char *p; p = &a; unsigned char b; b = p; }');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+    });
+
+    await test(`error position: non-void function missing return includes line info`, async () => {
+        const pos = await getErrorPos('unsigned char foo() {} void main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+    });
+
+    await test(`error position: return value from void function on line 1`, async () => {
+        const pos = await getErrorPos('void foo() { return 5; } void main() { foo(); }');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 1, `expected line 1, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: #if with arithmetic expression`, async () => {
+        const pos = await getErrorPos('#define A 1\n#if A + 1 > 0\nstruct foo { int a; };\n#endif\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 3, `expected line 3, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: multi-line #define with 2 continuations`, async () => {
+        const pos = await getErrorPos('#define MACRO \\\n    (1 + \\\n     2)\nunsigned char x = MACRO;\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 5, `expected line 5, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: subscript on non-pointer has line info`, async () => {
+        const pos = await getErrorPos('void main() { unsigned char x; x = 5[3]; }');
+        assert(pos !== null, 'expected error');
+        assert(pos.line !== null, `should have line info but got: ${pos.msg}`);
+    });
+
+    await test(`error position: comment + #define + continuation + #if 0`, async () => {
+        const pos = await getErrorPos('// header\n#define A \\\n    5\n#if 0\nskip\n#endif\nunsigned char x = A;\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 8, `expected line 8, got line ${pos.line}. Error: ${pos.msg}`);
+    });
+
+    await test(`error position: #if 0 with #elif and #else`, async () => {
+        const pos = await getErrorPos('#if 0\nskip1\n#elif 0\nskip2\n#else\nunsigned char x;\n#endif\nstruct foo { int a; };\nvoid main() {}');
+        assert(pos !== null, 'expected error');
+        assert(pos.line === 8, `expected line 8, got line ${pos.line}. Error: ${pos.msg}`);
     });
 
     console.log('\n=== Test Summary ===');

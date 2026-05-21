@@ -2,15 +2,20 @@
 
 ## Overview
 
-SC8P053VM uses Jest for automated testing with full TDD support.
+SC8P053VM uses Jest for automated testing with full TDD support, plus a comprehensive custom test framework.
 
 ## Test Structure
 
 - **Backend Tests**: `src/__tests__/*.test.ts`
-  - `cc.test.ts` - Compiler tests (bitwise, arithmetic, control flow, etc.)
+  - `cc.test.ts` - Compiler tests (bitwise, arithmetic, control flow, etc.) - 25 tests
 
 - **Frontend Tests**: `example/src/__tests__/*.test.tsx`
   - `App.test.tsx` - React component tests (component structure, methods)
+
+- **Comprehensive Test Suite**: `src/cc-test.js`
+  - 740 test cases covering all compiler features
+  - Bug regression tests (105 bugs tracked in `src/cc-test.md`)
+  - Edge case coverage for typedef, arrays, pointers, preprocessor, goto/label
 
 ## Running Tests
 
@@ -101,12 +106,14 @@ Current test coverage is approximately 29% because only core compiler tests have
 
 ## Legacy Tests
 
-The file `src/cc-test.js` contains the original custom test framework (3418 lines, 2800+ test cases). It is kept for historical reference but is excluded from Jest test runs.
+The file `src/cc-test.js` contains the comprehensive custom test framework (740 test cases). It covers all compiler features including typedef, multi-dimensional arrays, pointers, preprocessor, goto/label, and error detection.
 
 To run legacy tests:
 ```bash
 node src/cc-test.js
 ```
+
+Bug history and test documentation is in `src/cc-test.md` (105 bugs found and fixed).
 
 ## Best Practices
 

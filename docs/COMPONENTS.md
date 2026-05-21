@@ -236,22 +236,27 @@ vars.forEach(v => {
 #### Supported C Features
 
 ✅ **Supported**:
-- Basic types: `char`, `int`, `unsigned`
-- Arrays: `char buf[10]`
-- Pointers: Limited support
-- Functions: Definition and calls
-- Control flow: `if`, `else`, `while`, `for`, `switch`
-- Operators: Arithmetic, bitwise, comparison
-- Local and global variables
-- Comments
+- Basic types: `unsigned char`, `signed char`, `char`, `bool`, `void`, `int` (8-bit)
+- Typedef: global/local typedef, pointers, arrays, chaining, function params
+- Arrays: 1D, 2D, 3D with initialization, variable indices, compound assignment
+- Pointers: declaration, dereference, address-of, arithmetic, function params
+- Functions: definition, calls, return values (including pointer returns), ISR
+- Control flow: `if`/`else`, `while`, `do-while`, `for`, `switch`/`case`, `break`, `continue`
+- goto/label: forward/backward jumps, loop/switch exit, label validation
+- Preprocessor: `#define`, `#include`, `#if`/`#elif`/`#else`/`#endif`, `#ifdef`/`#ifndef`, `#error`
+- Variables: local, global, static local, `sizeof`
+- Operators: arithmetic, bitwise, comparison, logical, shift, compound assignment, ternary
+- Increment/decrement: pre and post `++`/`--`
 
 ❌ **Not Supported**:
-- Dynamic memory (malloc/free)
-- Floating point
-- Recursion (limited stack)
-- Complex structs
+- `struct`, `enum`, `union`
+- Dynamic memory (`malloc`/`free`)
+- Floating point (`float`, `double`)
+- Recursion (static RAM allocation)
+- Function pointers
 - Standard library functions
-- Preprocessor directives (#define, #include)
+- Multi-file compilation
+- Typedef cast syntax `(typedef_name)value`
 
 ---
 

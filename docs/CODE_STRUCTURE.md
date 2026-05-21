@@ -8,11 +8,11 @@ Complete module map and architecture documentation for SC8P053VM.
 sc8p053vm/
 ├── src/                      # Core source code
 │   ├── index.ts              # Module exports (public API)
-│   ├── vm.ts                 # Virtual Machine core
-│   ├── cc.ts                 # C Compiler
-│   ├── asmc.ts               # Assembler
-│   ├── cc-test.js            # Test data (generated)
-│   └── cc-test.md            # Test documentation
+│   ├── vm.ts                 # Virtual Machine core (~2074 lines)
+│   ├── cc.ts                 # C Compiler (~6890 lines)
+│   ├── asmc.ts               # Assembler (~564 lines)
+│   ├── cc-test.js            # Comprehensive test suite (740 test cases)
+│   └── cc-test.md            # Bug tracking and test documentation (105 bugs)
 │
 ├── example/                  # Frontend debugger example
 │   ├── src/
@@ -125,11 +125,12 @@ console.log('PC:', state.pc);
 
 **Purpose**: Compile C code to SC8P053 machine code
 
-**Size**: ~5900 lines (very large, complex)
+**Size**: ~6890 lines (largest and most complex module)
 
 **Responsibilities**:
 - Parse C code using tree-sitter
-- Semantic analysis and type checking
+- Preprocessor (#define, #include, #if/#ifdef, #error)
+- Semantic analysis and type checking (including typedef)
 - Generate intermediate representation
 - Optimize code for SC8P053 constraints
 - Emit machine code (Uint16Array)
@@ -154,27 +155,36 @@ interface DebugInfo {
 - `tree-sitter-c` - C grammar
 
 **Compilation Pipeline**:
-1. **Parsing** - tree-sitter parses C code into AST
-2. **Semantic Analysis** - Type checking, scope resolution
-3. **IR Generation** - Convert AST to intermediate representation
-4. **Code Generation** - Emit SC8P053 instructions
-5. **Optimization** - Reduce code size and improve performance
-6. **Debug Info** - Generate symbol tables for debugging
+1. **Preprocessing** - Macro expansion, conditional compilation, #error handling
+2. **Parsing** - tree-sitter parses preprocessed C code into AST
+3. **Semantic Analysis** - Type checking, typedef resolution, scope management
+4. **Code Generation** - Emit SC8P053 instructions with optimization
+5. **Debug Info** - Generate symbol tables and line number maps
 
 **Supported C Features**:
-- Basic types (char, int, unsigned)
-- Arrays and pointers
-- Functions and function calls
-- Control flow (if, while, for, switch)
-- Local and global variables
-- Bitwise operations
-- Limited struct support
+- Basic types: `unsigned char`, `signed char`, `char`, `bool`, `void`, `int` (8-bit)
+- Typedef: global/local typedef, pointers, arrays, chaining, function params
+- Arrays: 1D, 2D, 3D with initialization, variable indices, compound assignment
+- Pointers: declaration, dereference, address-of, arithmetic, function params
+- Functions: definition, calls, return values (including pointer returns), ISR
+- Control flow: `if`/`else`, `while`, `do-while`, `for`, `switch`/`case`, `break`, `continue`
+- goto/label: forward/backward jumps, loop/switch exit, label validation
+- Preprocessor: `#define`, `#include`, `#if`/`#elif`/`#else`/`#endif`, `#ifdef`/`#ifndef`, `#error`
+- Variables: local, global, static local, `sizeof`
+- Operators: arithmetic, bitwise, comparison, logical, shift, compound assignment, ternary
+- Increment/decrement: pre and post `++`/`--`
 
 **Limitations**:
+- No `struct`, `enum`, `union` support
 - No dynamic memory allocation (malloc/free)
-- No recursion (limited stack)
+- No recursion (static RAM allocation, limited stack)
 - No floating point (integer only)
-- Limited standard library
+- No function pointers
+- No standard library functions
+- No multi-file compilation
+- All `int` types are 8-bit (target MCU constraint)
+- `(typedef_name)value` cast syntax not supported (tree-sitter limitation)
+- Pointer arrays (`typedef *T; T arr[N]`) have type resolution issues
 
 **Usage Example**:
 ```typescript
@@ -428,17 +438,22 @@ example/src/index.tsx
 ## Testing Strategy
 
 ### Current State
-- Limited automated tests
+- **cc-test.js**: 740 comprehensive test cases covering compiler features
+- **cc-test.md**: Detailed bug tracking (105 bugs found and fixed)
+- **Jest (cc.test.ts)**: 25 unit tests for core compiler functionality
 - Manual testing via debugger UI
-- Test data in `src/cc-test.js`
 
-### Recommended Approach
-- Unit tests for VM instructions
-- Integration tests for compiler
-- E2E tests for debugger UI
-- Regression tests for bug fixes
-
-See **[WORKFLOW.md](./WORKFLOW.md)** for TDD guidelines.
+### Test Coverage by Feature
+- **Basic operations**: arithmetic, bitwise, comparison, logical
+- **Types**: unsigned char, signed char, bool, int
+- **Typedef**: basic, pointer, array, chaining, local scope, function params, redefinition
+- **Arrays**: 1D, 2D, 3D, initialization, variable indices, compound assignment
+- **Pointers**: declaration, dereference, address-of, arithmetic, function params
+- **Control flow**: if/else, while, do-while, for, switch, break, continue
+- **goto/label**: forward/backward jumps, loop exit, label validation
+- **Preprocessor**: #define, #include, #if/#ifdef, #error, nested conditionals
+- **Functions**: params, return values, ISR, pointer returns
+- **Error detection**: type errors, undefined symbols, invalid operations
 
 ---
 
@@ -521,5 +536,5 @@ if (this.ioCallback) {
 
 ---
 
-**Last Updated**: 2026-05-11
+**Last Updated**: 2026-05-21
 **Maintained By**: Project team

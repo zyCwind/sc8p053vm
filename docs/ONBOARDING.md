@@ -184,10 +184,18 @@ This:
 
 ### Running Tests
 
-Currently, the project doesn't have automated test suite. When implementing tests:
-- Create test files alongside source files (*.test.ts)
-- Or create separate test directory
-- Follow TDD principles from `docs/WORKFLOW.md`
+The project has two test suites:
+
+```bash
+# Comprehensive test suite (740 test cases)
+node src/cc-test.js
+
+# Jest unit tests (25 tests)
+npm test
+
+# Frontend tests
+npm run test:example
+```
 
 ---
 
@@ -207,6 +215,8 @@ Currently, the project doesn't have automated test suite. When implementing test
 - Translates C code to SC8P053 machine code
 - Uses tree-sitter for parsing
 - Generates debug information for debugging
+- Supports: typedef, arrays (1D/2D/3D), pointers, goto/label, preprocessor (#define, #if, #error)
+- See `src/cc-test.md` for detailed bug history and feature coverage
 
 ### Assembler (asmc.ts)
 - Processes assembly code

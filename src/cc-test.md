@@ -1330,35 +1330,49 @@
 
 **VM验证**: ✅ `(1+2) = 5` → Cannot assign to '(1+2)' - not an lvalue
 
-### Bug 67: 顶层 struct/enum/typedef 声明静默忽略
+### Bug 67: 顶层 struct/enum 声明静默忽略（typedef 已修复）
 
 **位置**: analyzeAll
 
 **问题**: `analyzeAll` 只处理 `declaration` 和 `function_definition` 类型的顶层节点，`struct_specifier`、`enum_specifier`、`type_definition` 等节点被完全忽略，不报错也不处理
 **影响**: `struct foo { int x; };`, `enum { A, B };`, `typedef unsigned char u8;` 等声明被静默忽略
-**修复**: 在 `analyzeAll` 中添加对 `type_definition`、`struct_specifier`、`enum_specifier`、`union_specifier` 的处理，抛出不支持的错误
+**修复**: 在 `analyzeAll` 中添加对 `type_definition` 的处理（实现 typedef 支持），对 `struct_specifier`、`enum_specifier`、`union_specifier` 抛出不支持的错误
 
-**VM验证**: ✅ `struct foo { int x; };` → 'struct' is not supported, `enum { A, B };` → 'enum' is not supported, `typedef` → 'typedef' is not supported
+**VM验证**: ✅ `struct foo { int x; };` → 'struct' is not supported, `enum { A, B };` → 'enum' is not supported, `typedef unsigned char u8;` → 正常工作
 
-### Bug 68: goto 语句静默忽略
+**typedef 实现详情**:
+- 添加 `globalTypedefs: Map<string, TypeInfo>` 和 `Fn.localTypedefs: Map<string, TypeInfo>` 管理全局/局部 typedef
+- `processTypedef` 方法解析 `type_definition` 节点，支持指针、数组 typedef
+- `lookupTypedef` 查找全局/局部 typedef
+- `resolveTypeInfo` 合并 typedef 类型信息与 declarator 信息
+- `resolveType` 中 `type_identifier` 现在查 typedef 表
+- 声明遍历中过滤 `type_identifier` 节点
+- 函数返回指针类型检查支持 typedef
+- typedef 重定义报错
+
+### Bug 68: goto 语句（已实现）
 
 **位置**: emitStatement
 
 **问题**: `emitStatement` 的 switch 中没有 `goto_statement` 的处理分支，goto 语句被完全忽略
 **影响**: `goto label;` 不生成任何代码也不报错
-**修复**: 在 `emitStatement` 中添加 `goto_statement` 分支，抛出不支持的错误
+**修复**: 实现完整的 goto/label 支持：
+- `emitStatement` 中添加 `goto_statement` 分支，生成 JMP 指令
+- `emitStatement` 中添加 `labeled_statement` 分支，记录标签地址
+- 两遍扫描：第一遍收集标签和 goto 目标，第二遍生成代码并回填跳转地址
+- 错误检查：未定义标签报错、重复标签报错
 
-**VM验证**: ✅ `goto label;` → 'goto' is not supported on this target
+**VM验证**: ✅ goto 跳转、向后跳转循环、从 while/for/switch 中跳出、前向引用标签、多 goto 同一标签
 
-### Bug 69: labeled 语句静默忽略
+### Bug 69: labeled 语句（已实现，随 Bug 68 一起修复）
 
 **位置**: emitStatement
 
 **问题**: `emitStatement` 的 switch 中没有 `labeled_statement` 的处理分支，标签语句被完全忽略
 **影响**: `label: a = 5;` 中标签被忽略，后续语句可能被错误处理
-**修复**: 在 `emitStatement` 中添加 `labeled_statement` 分支，抛出不支持的错误；同时添加 `default` 分支捕获所有未处理的语句类型
+**修复**: 随 Bug 68（goto）一起实现，`labeled_statement` 分支记录标签地址并继续生成标签后语句的代码
 
-**VM验证**: ✅ `label: a = 5;` → Labels are not supported on this target
+**VM验证**: ✅ label 语句正常工作，goto 可跳转到标签
 
 ### Bug 70: 非void函数空 return 未报错
 
@@ -1574,3 +1588,120 @@
 - 所有原有测试无回归
 
 **测试覆盖**: 556 个测试用例（cc-test.js），556/556 全部通过
+
+---
+
+## 第9轮：编译器错误位置信息修复
+
+### Bug 99: 编译器错误信息中代码位置不正确
+
+**位置**: Preprocessor, Compiler (cc.ts)
+
+**问题**: 编译器在报告错误时，使用的行号和列号是基于预处理后的文本位置，而非原始源代码位置。这导致以下场景中错误位置不准确：
+1. **续行合并**：`unsigned char x = \` 后跟续行内容，合并后行号偏移
+2. **多行注释**：`/* ... */` 注释跨越多行，后续代码行号偏移
+3. **宏展开**：`#define` 行被移除后，后续代码行号偏移
+4. **条件编译**：`#if 0` 块被跳过后，后续代码行号偏移
+5. **语义错误缺少位置**：大量语义错误（未定义变量/函数、不支持的类型、指针错误等）不包含行号和列号信息
+
+**影响**: 用户无法根据错误信息定位到源代码中的实际错误位置
+
+**修复**:
+1. **Source Map 生成**：在 Preprocessor 中生成 sourceMap，跟踪预处理过程中每个字符的原始位置
+   - `joinContinuationLines` 方法生成 mergedSegments，记录合并行中每个片段的原始行号和列偏移
+   - `preprocess` 方法将 mergedSegments 转换为 lineSegments，按原始行号索引
+2. **位置映射**：在 Compiler 中添加 `mapPos(row, col)` 和 `posStr(node)` 方法，将预处理后的位置映射回原始位置
+3. **错误信息更新**：所有错误信息使用 `this.posStr(node)` 替代硬编码的 `node.startPosition.row + 1`
+4. **语义错误添加位置**：为所有语义错误添加位置信息，包括：
+   - 未定义变量/函数
+   - 不支持的类型（int, float, struct, enum, typedef 等）
+   - 指针操作错误（解引用非指针、指针算术、赋值类型不匹配）
+   - 除零错误
+   - break/continue 不在循环中
+   - goto/label 不支持
+   - 重复定义
+   - 返回值类型错误
+   - 非左值赋值
+   - 数组下标类型错误
+
+### Bug 100: 嵌套 #if 0 块中的内容未被正确跳过
+
+**位置**: Preprocessor.processIf / processIfdef
+
+**问题**: 当外层 `#if 0` 不活跃时，内层的 `#if 1` 仍然会执行条件评估，导致内层块被错误地标记为活跃
+**影响**: `#if 0\n#if 1\nnested\n#endif\n#endif` 中的 `nested` 被当作有效代码处理
+**修复**: 在 `processIf` 和 `processIfdef` 中，当 `!this.isActive()` 时，直接 push 一个不活跃的 frame，跳过条件评估
+
+**VM验证**: ✅ 所有 671 个测试用例通过，包括 45 个新增的错误位置测试：
+- 续行合并后行号映射正确
+- 多行注释后行号映射正确
+- 宏展开后行号映射正确
+- #if 0/#ifdef 块后行号映射正确
+- 嵌套 #if 0 块内容正确跳过
+- 所有语义错误包含行号和列号信息
+- 列号位置映射正确
+
+**测试覆盖**: 671 个测试用例（cc-test.js），671/671 全部通过
+
+---
+
+## 第8轮：#error 预处理器指令与 typedef 类型别名实现
+
+### Bug 101: #error 预处理器指令未实现
+
+**位置**: Preprocessor.processDirective
+
+**问题**: `#error` 指令未被处理，编译时被静默忽略
+**影响**: `#error stop here` 不产生任何错误
+**修复**: 在 `processDirective` 中添加 `error` 分支，当条件块活跃时抛出 `#error <message>` 错误，非活跃时跳过
+
+**VM验证**: ✅ `#error stop here` → 抛出错误, `#if 0\n#error ...\n#endif` → 不触发
+
+### Bug 102: typedef 类型别名未实现
+
+**位置**: Compiler.resolveType / analyzeAll
+
+**问题**: typedef 声明被静默忽略，使用 typedef 定义的类型名报 "Unknown type" 错误
+**影响**: `typedef unsigned char u8; u8 x = 5;` → Unknown type 'u8'
+**修复**: 实现完整的 typedef 支持：
+- `globalTypedefs` 和 `Fn.localTypedefs` 管理全局/局部 typedef
+- `processTypedef` 解析 `type_definition` 节点
+- `lookupTypedef` 查找 typedef
+- `resolveTypeInfo` 合并 typedef 信息与 declarator 信息
+- `resolveType` 中 `type_identifier` 查 typedef 表
+- 声明遍历中过滤 `type_identifier` 节点
+- 函数返回指针类型检查支持 typedef
+
+**VM验证**: ✅ typedef 基本类型、指针、数组、链式、局部、函数参数、返回指针、2D/3D 数组、sizeof、static、初始化列表、bool
+
+### Bug 103: typedef 重定义未报错
+
+**位置**: Compiler.processTypedef
+
+**问题**: 重复定义同名 typedef 时被静默覆盖，不报错
+**影响**: `typedef unsigned char u8; typedef unsigned char u8;` → 静默覆盖
+**修复**: 在 `processTypedef` 中添加重定义检查，同名 typedef 抛出 "Typedef 'xxx' redefined" 错误
+
+**VM验证**: ✅ `typedef unsigned char u8; typedef unsigned char u8;` → "Typedef 'u8' redefined"
+
+### Bug 104: typedef 返回指针类型报错
+
+**位置**: Compiler.processFnSignature
+
+**问题**: 函数返回 typedef 指针类型时，`returnIsPointer` 只检查 declarator 中的 `*`，不检查 typedef 的 `isPointer`
+**影响**: `typedef unsigned char *pu8; pu8 get_ptr() { return &g; }` → 返回值不当作指针处理
+**修复**: 在 `returnIsPointer` 计算中增加 typedef 指针类型检查
+
+**VM验证**: ✅ `typedef unsigned char *pu8; pu8 get_ptr() { return &g; }` → 正确返回指针
+
+### Bug 105: type_identifier 被当作 declarator
+
+**位置**: Compiler.processGlobalDeclaration / collectLocalDeclarations
+
+**问题**: 声明遍历子节点时，`type_identifier` 节点被当作 declarator 处理，导致 typedef 类型名被错误地当作变量声明
+**影响**: `u8 x;` 中 `u8` 被当作变量声明
+**修复**: 在 `processGlobalDeclaration`、`collectLocalDeclarations`、`emitDeclarationInit` 中过滤 `type_identifier` 节点
+
+**VM验证**: ✅ 所有 typedef 测试通过
+
+**测试覆盖**: 740 个测试用例（cc-test.js），740/740 全部通过

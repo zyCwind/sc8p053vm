@@ -18,6 +18,10 @@ Complete documentation map for SC8P053VM project.
 ### 🏗️ Code Structure
 - **[docs/CODE_STRUCTURE.md](./CODE_STRUCTURE.md)** - Complete code module map and architecture
 
+### 🧪 Testing
+- **[docs/TESTING.md](./TESTING.md)** - Testing guide (Jest + custom test framework)
+- **[src/cc-test.md](../src/cc-test.md)** - Compiler bug tracking and test documentation (105 bugs)
+
 ### 📐 Design & Planning
 - **[docs/superpowers/specs/](./superpowers/specs/)** - Feature design documents
 - **[docs/superpowers/plans/](./superpowers/plans/)** - Implementation plans
@@ -145,5 +149,5 @@ If you can't find what you need:
 
 ---
 
-**Last Updated**: 2026-05-11
+**Last Updated**: 2026-05-21
 **Maintained By**: Project team and AI agents
