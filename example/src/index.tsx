@@ -63,6 +63,12 @@ class App extends React.Component<
         }
     };
 
+    private onResize = (e: UIEvent) => {
+        if (this.input.current && this.sidebar.current) {
+            this.sidebar.current.style.height = `${this.input.current.clientHeight}px`;
+        }
+    };
+
     constructor(props: {}) {
         super(props);
         this.state = {
@@ -211,6 +217,7 @@ class App extends React.Component<
 
     componentDidMount() {
         document.addEventListener('keydown', this.onKeydown);
+        window.addEventListener('resize', this.onResize);
         fetch('public/main.c')
             .then((response) => response.text())
             .then((text) => {
@@ -251,6 +258,7 @@ class App extends React.Component<
 
     componentWillUnmount() {
         document.removeEventListener('keydown', this.onKeydown);
+        window.removeEventListener('resize', this.onResize);
         if (this.animationFrameId !== null) {
             cancelAnimationFrame(this.animationFrameId);
             this.animationFrameId = null;
